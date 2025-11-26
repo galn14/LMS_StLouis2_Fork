@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/public/uploads/courses
 
 # next.js
 /.next/
@@ -49,3 +50,4 @@ DATABASE-SETUP-SUMMARY.md
 
 # scripts
 /scripts
+/.env

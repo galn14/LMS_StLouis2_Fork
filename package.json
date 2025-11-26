@@ -26,7 +26,7 @@
     "@types/bcryptjs": "^3.0.0",
     "@types/crypto-js": "^4.2.2",
     "@types/pg": "^8.15.2",
-    "bcryptjs": "^3.0.2",
+    "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "crypto-js": "^4.2.0",

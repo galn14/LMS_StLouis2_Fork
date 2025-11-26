@@ -19,6 +19,7 @@ interface AssignmentTabProps {
 
 export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabProps) {
   const { data: session } = useSession();
+
   const [viewMode, setViewMode] = useState<'all' | 'by-session'>('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -30,7 +31,7 @@ export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabPr
   const { assignments, loading, refetch } = useAssignmentData(courseCode);
   const { handlePublishToggle, handleBulkPublish, handleSubmitAnswer } = useAssignmentActions(courseCode, refetch);
 
-  const isTeacher = session?.user?.role === 'TEACHER' || session?.user?.role === 'GURU';
+  const isTeacher = session?.user?.role?.toUpperCase() === 'TEACHER' || session?.user?.role?.toUpperCase() === 'GURU';
   const currentUserId = session?.user?.id ? parseInt(session.user.id) : null;
   const filteredAssignments = filterAssignments(assignments, isTeacher);
 
