@@ -5,27 +5,31 @@ import { getToken } from 'next-auth/jwt';
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // 1. DETERMINE COOKIE NAME
-  // If we are in production (Vercel) or HTTPS, use the Secure name.
-  // Otherwise, use the local name.
-  const secureCookie = process.env.NEXTAUTH_URL?.startsWith("https://") ?? !!process.env.VERCEL;
-  const cookieName = secureCookie 
-    ? "__Secure-next-auth.session-token" 
-    : "next-auth.session-token";
+  // --- FIX START ---
+  // Check directly if the browser sent the Secure cookie
+  // This works in Local (HTTP) AND Production (HTTPS) automatically
+  const hasSecureCookie = request.cookies.has('__Secure-next-auth.session-token');
+  
+  const cookieName = hasSecureCookie
+    ? '__Secure-next-auth.session-token' // Use this if present
+    : 'next-auth.session-token';         // Fallback for localhost
 
-  // 2. GET TOKEN WITH EXPLICIT COOKIE NAME
   const token = await getToken({
     req: request,
-    secret: process.env.NEXTAUTH_SECRET, // Ensure this Variable is set in Vercel!
-    cookieName, // <--- This is the key fix
+    secret: process.env.NEXTAUTH_SECRET,
+    cookieName, // We tell getToken exactly which name to read
   });
+  // --- FIX END ---
 
-  // 3. LOGGING (Updated to help debugging)
+  // Logging to confirm the fix
   console.log(`Middleware [${pathname}]`, {
-    environment: secureCookie ? 'Production (Secure)' : 'Development',
-    lookingForCookie: cookieName,
+    detectedCookieName: cookieName,
     tokenFound: !!token
   });
+
+  // ----------------------------------------------------
+  // The rest of your logic remains exactly the same...
+  // ----------------------------------------------------
 
   // Skip static files
   if (
@@ -42,20 +46,14 @@ export async function middleware(request: NextRequest) {
   const publicRoutes = ['/login', '/register'];
   const isPublicRoute = publicRoutes.some(route => pathname.startsWith(route));
 
-  // --- LOGIC ---
-
   if (token) {
-    // If user is logged in but trying to access Login -> Go to Dashboard
     if (isPublicRoute) {
       return NextResponse.redirect(new URL('/dashboard', request.url));
     }
-    // Allow access to protected routes
     return NextResponse.next();
   }
 
-  // No Token Found
   if (!isPublicRoute) {
-    // Redirect to login
     const url = new URL('/login', request.url);
     return NextResponse.redirect(url);
   }
