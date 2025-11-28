@@ -1,8 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/auth';
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ code: string; sessionId: string }> }) {
   try {
+    const session = await getServerSession(authOptions);
+    if (!session || !session.user || !session.user.id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Unauthorized',
+          message: 'You must be logged in to upload resources',
+        },
+        { status: 401 }
+      );
+    }
+
     const { code, sessionId } = await params;
     const sessionIdNum = parseInt(sessionId);
     const body = await request.json();
@@ -26,7 +40,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
 
     // Verify session exists
-    const session = await prisma.sessions.findFirst({
+    const dbSession = await prisma.sessions.findFirst({
       where: {
         id: sessionIdNum,
         class_courses: {
@@ -37,7 +51,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       },
     });
 
-    if (!session) {
+    if (!dbSession) {
       return NextResponse.json(
         {
           success: false,
@@ -50,7 +64,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const newResource = await prisma.resources.create({
       data: {
         session_id: sessionIdNum,
-        uploader_id: 1,
+        uploader_id: parseInt(session.user.id),
         file_url: body.file_url,
         file_name: body.file_name,
         file_tittle: body.file_tittle,

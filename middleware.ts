@@ -5,57 +5,55 @@ import { getToken } from 'next-auth/jwt';
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // --- FIX START ---
-  // Check directly if the browser sent the Secure cookie
-  // This works in Local (HTTP) AND Production (HTTPS) automatically
-  const hasSecureCookie = request.cookies.has('__Secure-next-auth.session-token');
-  
-  const cookieName = hasSecureCookie
-    ? '__Secure-next-auth.session-token' // Use this if present
-    : 'next-auth.session-token';         // Fallback for localhost
-
   const token = await getToken({
     req: request,
     secret: process.env.NEXTAUTH_SECRET,
-    cookieName, // We tell getToken exactly which name to read
-  });
-  // --- FIX END ---
-
-  // Logging to confirm the fix
-  console.log(`Middleware [${pathname}]`, {
-    detectedCookieName: cookieName,
-    tokenFound: !!token
   });
 
-  // ----------------------------------------------------
-  // The rest of your logic remains exactly the same...
-  // ----------------------------------------------------
-
-  // Skip static files
   if (
     pathname.startsWith('/api/auth') || 
-    pathname.startsWith('/_next/') || 
+    pathname.startsWith('/_next') || 
     pathname.startsWith('/favicon.ico') ||
-    pathname.startsWith('/images/') ||
-    pathname.startsWith('/icons/') ||
-    pathname.includes('.') 
+    pathname.startsWith('/images') ||
+    pathname.startsWith('/icons') ||
+    pathname.includes('.')
   ) {
     return NextResponse.next();
   }
 
-  const publicRoutes = ['/login', '/register'];
+  const publicRoutes = ['/login', '/auth'];
   const isPublicRoute = publicRoutes.some(route => pathname.startsWith(route));
 
   if (token) {
+    const now = Date.now() / 1000;
+
+    if (token.exp && (token.exp as number) < now) {
+      console.warn('[Middleware] Token expired. Clearing session.');
+      
+      const response = NextResponse.redirect(new URL('/login', request.url));
+      
+      const cookieOptions = { path: '/', secure: process.env.NODE_ENV === 'production' };
+      
+      response.cookies.delete('next-auth.session-token');
+      response.cookies.delete('__Secure-next-auth.session-token');
+      response.cookies.delete('next-auth.csrf-token');
+      response.cookies.delete('__Secure-next-auth.csrf-token');
+      
+      return response;
+    }
+
     if (isPublicRoute) {
       return NextResponse.redirect(new URL('/dashboard', request.url));
     }
+
     return NextResponse.next();
   }
 
   if (!isPublicRoute) {
-    const url = new URL('/login', request.url);
-    return NextResponse.redirect(url);
+    const loginUrl = new URL('/login', request.url);
+    loginUrl.searchParams.set('callbackUrl', request.nextUrl.pathname);
+    
+    return NextResponse.redirect(loginUrl);
   }
 
   return NextResponse.next();
