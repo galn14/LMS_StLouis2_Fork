@@ -44,6 +44,8 @@ next-env.d.ts
 /lib/generated/prisma
 
 DATABASE-SETUP-SUMMARY.md
+AGENTS.md
+/.gemini
 
 # docs
 /docs
