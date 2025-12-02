@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
     });
 
     // 4.5 Attach uploaded files to Vector Store
-    // We use a loop here as the user prompt implies attaching files. 
+    // Use a loop here as the user prompt implies attaching files. 
     // For production with many files, a batch upload (fileBatches) is preferred.
     for (const fileId of uploadedFileIds) {
         try {
@@ -115,7 +115,7 @@ export async function POST(request: NextRequest) {
     const assistant = await openai.beta.assistants.create({
       name: `ACS_Assistant_${assignmentId}`,
       instructions: systemPrompt,
-      model: "gpt-4o", // Or "gpt-4-turbo"
+      model: "gpt-4o-mini",
       tools: [{ type: "file_search" }],
       tool_resources: {
         file_search: {
@@ -143,7 +143,7 @@ export async function POST(request: NextRequest) {
         // Cleanup OpenAI resources if DB save fails
         await (openai.beta.assistants as any).del(assistant.id);
         await (openai.beta as any).vectorStores.del(vectorStore.id);
-        // Note: We are not deleting the uploaded files here, but ideally we should.
+        // Note: not deleting the uploaded files here, but ideally should.
         console.error('Supabase error:', error);
         return NextResponse.json({ success: false, error: 'Database error' }, { status: 500 });
     }
