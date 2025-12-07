@@ -67,7 +67,7 @@ export async function POST(request: NextRequest) {
 
     try {
         // Delete Assistant
-        await (openai.beta.assistants as any).del(acsAssignment.assistant_id);
+        await openai.beta.assistants.delete(acsAssignment.assistant_id);
         cleanupResults.assistant = 'success';
     } catch (e: any) {
         if (e.status === 404) cleanupResults.assistant = 'not_found';
@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
 
     try {
         // Delete Vector Store
-        await (openai.beta as any).vectorStores.del(acsAssignment.vector_store_id);
+        await openai.vectorStores.delete(acsAssignment.vector_store_id);
         cleanupResults.vectorStore = 'success';
     } catch (e: any) {
         if (e.status === 404) cleanupResults.vectorStore = 'not_found';
@@ -85,14 +85,14 @@ export async function POST(request: NextRequest) {
 
     // Delete individual files
     for (const fileId of filesToDelete) {
-        try {
-            await (openai.files as any).del(fileId);
-            cleanupResults.files.push({ fileId, status: 'success' });
-        } catch (e: any) {
-            if (e.status === 404) cleanupResults.files.push({ fileId, status: 'not_found' });
-            else cleanupResults.files.push({ fileId, status: 'failed' });
-            console.warn(`Failed to delete file ${fileId}:`, e.message);
-        }
+      try{
+        await openai.files.delete(fileId);
+        cleanupResults.files.push({ fileId, status: 'success' });
+      } catch (e: any) {
+        if (e.status === 404) cleanupResults.files.push({ fileId, status: 'not_found' });
+        else cleanupResults.files.push({ fileId, status: 'failed' });
+        console.warn(`Failed to delete file ${fileId}:`, e.message);
+      }
     }
 
     // 5. Update assignment status in Supabase

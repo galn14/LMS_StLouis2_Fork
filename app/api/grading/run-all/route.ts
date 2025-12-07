@@ -11,7 +11,7 @@ export async function POST(request: NextRequest) {
     if (!session?.user?.id) return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
 
     const body = await request.json();
-    const { assignmentId } = body; // LMS Assignment ID
+    const { assignmentId } = body;
 
     // 1. Fetch ACS Config
     const { data: acsData, error: acsError } = await supabaseAdmin
@@ -64,11 +64,17 @@ export async function POST(request: NextRequest) {
     
     (async () => {
         try {
-            const fullRubric = acsData.rubric as any[];
+            const rawRubric = acsData.rubric;
 
             for (const sub of submissions) {
                 for (const ans of sub.assignment_answers) {
-                     const questionRubric = fullRubric.find((r: any) => r.questionId === ans.question_id) || fullRubric[0];
+                     let questionRubric: any = null;
+                     if (Array.isArray(rawRubric)) {
+                        questionRubric = rawRubric.find((r: any) => r.questionId === ans.question_id) || rawRubric[0];
+                     } else if (rawRubric) {
+                        questionRubric = rawRubric;
+                     }
+
                      if (!questionRubric || !ans.answer_text) continue;
 
                      await gradeStudentAnswer({
@@ -95,7 +101,7 @@ export async function POST(request: NextRequest) {
         }
     })();
 
-    return NextResponse.json({ success: true, jobId: jobData.id, message: 'Grading started in background' });
+    return NextResponse.json({ success: true, jobId: jobData.id, message: 'Grading started in background', submissions, gradeStudentAnswer });
 
   } catch (error: any) {
     console.error('Error in run-all:', error);

@@ -25,11 +25,29 @@ export async function GET(request: NextRequest) {
     .select('*', { count: 'exact', head: true })
     .eq('job_id', jobId);
 
+  const studentGradeFeedback = await supabaseAdmin
+    .from('acs_grading_results')
+    .select('student_id, question_id, score, feedback')
+    .eq('job_id', jobId);
+
+  const resultData = await supabaseAdmin
+    .from('acs_grading_jobs')
+    .select('total_students')
+    .eq('id', jobId)
+    .single();
+
+  if (resultData.error) {
+    return NextResponse.json({ success: false, error: 'Could not fetch total students' }, { status: 500 });
+  }
+
   return NextResponse.json({
     success: true,
     data: {
       ...data,
       items_processed: count
-    }
+    },
+    resultData: resultData.data,
+    studentGradeFeedback: studentGradeFeedback.data
   });
 }
+

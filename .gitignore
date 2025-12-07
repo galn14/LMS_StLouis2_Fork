@@ -46,6 +46,7 @@ next-env.d.ts
 DATABASE-SETUP-SUMMARY.md
 AGENTS.md
 /.gemini
+/supabase
 
 # docs
 /docs
@@ -53,3 +54,5 @@ AGENTS.md
 # scripts
 /scripts
 /.env
+/.env.local
+/.env.production

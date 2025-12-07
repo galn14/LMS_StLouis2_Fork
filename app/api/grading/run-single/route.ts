@@ -35,8 +35,15 @@ export async function POST(request: NextRequest) {
     // Here assume the stored rubric is an array of objects which contain a `questionId` field or similar map.
     
     // Type assertion for the stored JSONB
-    const fullRubric = acsData.rubric as any[]; 
-    const questionRubric = fullRubric.find((r: any) => r.questionId === questionId) || fullRubric[0]; // Fallback for demo
+    const rawRubric = acsData.rubric;
+    let questionRubric: any = null;
+
+    if (Array.isArray(rawRubric)) {
+      questionRubric = rawRubric.find((r: any) => r.questionId === questionId) || rawRubric[0];
+    } else if (rawRubric) {
+      // If it's a single object, use it directly
+      questionRubric = rawRubric;
+    }
 
     if (!questionRubric) {
         return NextResponse.json({ success: false, error: 'Rubric for question not found' }, { status: 400 });

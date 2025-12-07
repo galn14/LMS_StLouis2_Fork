@@ -8,15 +8,22 @@ CREATE TABLE IF NOT EXISTS acs_assignments (
   rubric JSONB NOT NULL,
   created_by VARCHAR NOT NULL,
   status VARCHAR DEFAULT 'setup',
+  rerun_grading VARCHAR DEFAULT 'false',  -- manual | automatic
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  archived_at TIMESTAMPTZ
+  archived_at TIMESTAMPTZ,
+  rerun_grading_at TIMESTAMPTZ
 );
+
+-- Unique per assignment id + version
+CREATE UNIQUE INDEX IF NOT EXISTS acs_assignments_assignment_id_run_version_key
+  ON acs_assignments (assignment_id);
 
 -- Track uploaded files for cleanup
 CREATE TABLE IF NOT EXISTS acs_uploaded_files (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   assignment_id VARCHAR NOT NULL REFERENCES acs_assignments(assignment_id),
   file_id VARCHAR NOT NULL,
+  type_file VARCHAR NOT NULL,
   filename VARCHAR NOT NULL,
   uploaded_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -63,7 +70,7 @@ CREATE TABLE IF NOT EXISTS acs_token_usage (
   assignment_id VARCHAR NOT NULL,
   student_id VARCHAR NOT NULL,
   tokens_used INTEGER NOT NULL,
-  estimated_cost NUMERIC(10,4),           -- IDR
+  estimated_cost NUMERIC(10,4),           -- USD
   recorded_at TIMESTAMPTZ DEFAULT NOW()
 );
 

@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
-import { openai } from '@/lib/openai';
+// import { openai } from '@/lib/openai';
 import { supabaseAdmin } from '@/lib/supabase/server';
 import fs from 'fs';
 import path from 'path';
+import { OpenAI } from 'openai';
 
 export async function POST(request: NextRequest) {
   try {
@@ -37,6 +38,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Missing required fields' }, { status: 400 });
     }
 
+    // 3.1 Check if assignment already exists
+    const { data: existingAssignment, error: existingAssignmentError } = await supabaseAdmin
+      .from('acs_assignments')
+      .select('id, assistant_id, vector_store_id, status')
+      .eq('assignment_id', assignmentId.toString())
+      .maybeSingle();
+
+    if (existingAssignmentError) {
+      return NextResponse.json(
+        { success: false, error: 'Failed to check existing assignment', details: existingAssignmentError.message },
+        { status: 500 }
+      );
+    }
+
+    const isRerun = Boolean(existingAssignment);
+
     // 3.5 Fetch existing course materials (resources)
     const courseResources = await prisma.resources.findMany({
       where: {
@@ -58,7 +75,27 @@ export async function POST(request: NextRequest) {
 
     const supportedExtensions = ['.pdf', '.docx', '.doc', '.txt', '.md', '.pptx'];
     const uploadedFileIds: string[] = [];
-    const uploadedFileRecords: { file_id: string; filename: string }[] = [];
+    const uploadedFileRecords: { file_id: string; filename: string; type_file: string }[] = [];
+    const openai = new OpenAI();
+
+    // Cleanup stale OpenAI resources when re-running an archived assignment id
+    if (isRerun && existingAssignment) {
+      if (existingAssignment.assistant_id) {
+        try {
+          await openai.beta.assistants.delete(existingAssignment.assistant_id);
+        } catch (cleanupError) {
+          console.warn('Failed to delete previous assistant during rerun:', cleanupError);
+        }
+      }
+
+      if (existingAssignment.vector_store_id) {
+        try {
+          await openai.vectorStores.delete(existingAssignment.vector_store_id);
+        } catch (cleanupError) {
+          console.warn('Failed to delete previous vector store during rerun:', cleanupError);
+        }
+      }
+    }
 
     for (const resource of courseResources) {
       try {
@@ -78,9 +115,12 @@ export async function POST(request: NextRequest) {
         });
 
         uploadedFileIds.push(openaiFile.id);
+        const fileType = resource.file_type ?? ext.replace('.', ' ') ?? 'unknown';
+
         uploadedFileRecords.push({
             file_id: openaiFile.id,
-            filename: resource.file_name
+            filename: resource.file_name,
+            type_file: fileType
         });
 
       } catch (err) {
@@ -90,7 +130,8 @@ export async function POST(request: NextRequest) {
     }
 
     // 4. Create OpenAI Vector Store
-    const vectorStore = await (openai.beta as any).vectorStores.create({
+
+    const vectorStore = await openai.vectorStores.create({
       name: `VS_${courseId}_${assignmentId}`,
     });
 
@@ -99,7 +140,7 @@ export async function POST(request: NextRequest) {
     // For production with many files, a batch upload (fileBatches) is preferred.
     for (const fileId of uploadedFileIds) {
         try {
-            await (openai.beta as any).vectorStores.files.create(vectorStore.id, {
+            await openai.vectorStores.files.create(vectorStore.id, {
                 file_id: fileId
             });
         } catch (e) {
@@ -125,27 +166,38 @@ export async function POST(request: NextRequest) {
     });
 
     // 7. Save to Supabase
+    const rerunFields = isRerun
+      ? { rerun_grading: 'true', rerun_grading_at: new Date().toISOString(), archived_at: null }
+      : { rerun_grading: 'false' as const };
+
     const { data, error } = await supabaseAdmin
       .from('acs_assignments')
-      .insert({
-        assignment_id: assignmentId.toString(), // Ensure string format
-        course_id: courseId.toString(),
-        assistant_id: assistant.id,
-        vector_store_id: vectorStore.id,
-        rubric: rubric,
-        created_by: session.user.id,
-        status: 'setup',
-      })
+      .upsert(
+        {
+          assignment_id: assignmentId.toString(), // Ensure string format
+          course_id: courseId.toString(),
+          assistant_id: assistant.id,
+          vector_store_id: vectorStore.id,
+          rubric: rubric,
+          created_by: session.user.id,
+          status: 'setup',
+          ...rerunFields,
+        },
+        { onConflict: 'assignment_id' }
+      )
       .select()
       .single();
 
     if (error) {
         // Cleanup OpenAI resources if DB save fails
-        await (openai.beta.assistants as any).del(assistant.id);
-        await (openai.beta as any).vectorStores.del(vectorStore.id);
+        await openai.beta.assistants.delete(assistant.id);
+        await openai.vectorStores.delete(vectorStore.id);
+        
+        // await (openai.beta as any).vectorStores.del(vectorStore.id);
         // Note: not deleting the uploaded files here, but ideally should.
         console.error('Supabase error:', error);
-        return NextResponse.json({ success: false, error: 'Database error' }, { status: 500 });
+        // Avoid referencing properties on `data` which may be null/never; return the Supabase error message instead.
+        return NextResponse.json({ success: false, error: 'Database error', details: (error as any)?.message ?? String(error) }, { status: 500 });
     }
 
     // 7.5 Save uploaded file records to Supabase
@@ -153,7 +205,8 @@ export async function POST(request: NextRequest) {
         const fileInserts = uploadedFileRecords.map(rec => ({
             assignment_id: assignmentId.toString(),
             file_id: rec.file_id,
-            filename: rec.filename
+            filename: rec.filename,
+            type_file: rec.type_file
         }));
         
         const { error: fileError } = await supabaseAdmin
@@ -172,6 +225,7 @@ export async function POST(request: NextRequest) {
         acs_assignment_id: data.id,
         assistant_id: assistant.id,
         vector_store_id: vectorStore.id,
+        // status: data.status,
       },
     });
 
