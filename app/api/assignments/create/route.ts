@@ -125,7 +125,6 @@ export async function POST(request: NextRequest) {
 
       } catch (err) {
         console.error(`Failed to upload resource ${resource.id} to OpenAI:`, err);
-        // Continue with other files
       }
     }
 
@@ -136,8 +135,6 @@ export async function POST(request: NextRequest) {
     });
 
     // 4.5 Attach uploaded files to Vector Store
-    // Use a loop here as the user prompt implies attaching files. 
-    // For production with many files, a batch upload (fileBatches) is preferred.
     for (const fileId of uploadedFileIds) {
         try {
             await openai.vectorStores.files.create(vectorStore.id, {
@@ -193,10 +190,7 @@ export async function POST(request: NextRequest) {
         await openai.beta.assistants.delete(assistant.id);
         await openai.vectorStores.delete(vectorStore.id);
         
-        // await (openai.beta as any).vectorStores.del(vectorStore.id);
-        // Note: not deleting the uploaded files here, but ideally should.
         console.error('Supabase error:', error);
-        // Avoid referencing properties on `data` which may be null/never; return the Supabase error message instead.
         return NextResponse.json({ success: false, error: 'Database error', details: (error as any)?.message ?? String(error) }, { status: 500 });
     }
 
@@ -215,7 +209,6 @@ export async function POST(request: NextRequest) {
             
         if (fileError) {
             console.error('Failed to record uploaded files in DB:', fileError);
-            // Non-critical error, assignment is still created
         }
     }
 
@@ -225,7 +218,6 @@ export async function POST(request: NextRequest) {
         acs_assignment_id: data.id,
         assistant_id: assistant.id,
         vector_store_id: vectorStore.id,
-        // status: data.status,
       },
     });
 

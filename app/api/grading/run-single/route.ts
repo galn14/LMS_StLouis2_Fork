@@ -26,13 +26,6 @@ export async function POST(request: NextRequest) {
     if (acsError || !acsData) {
       return NextResponse.json({ success: false, error: 'ACS configuration not found' }, { status: 404 });
     }
-
-    // Find rubric for this question (assuming rubric is stored as array with question_id or order)
-    // For simplicity, assuming rubric is an array of Rubric objects passed from frontend or mapped by question_id
-    // Adjust logic to match how you stored `rubric` JSONB. 
-    // If `rubric` is an array of objects like [{questionId: '1', ...rubric}], find it.
-    // If simply the rubric object itself, use it directly.
-    // Here assume the stored rubric is an array of objects which contain a `questionId` field or similar map.
     
     // Type assertion for the stored JSONB
     const rawRubric = acsData.rubric;
@@ -41,7 +34,6 @@ export async function POST(request: NextRequest) {
     if (Array.isArray(rawRubric)) {
       questionRubric = rawRubric.find((r: any) => r.questionId === questionId) || rawRubric[0];
     } else if (rawRubric) {
-      // If it's a single object, use it directly
       questionRubric = rawRubric;
     }
 

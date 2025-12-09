@@ -23,8 +23,6 @@ export async function POST(request: NextRequest) {
     if (acsError || !acsData) return NextResponse.json({ success: false, error: 'ACS Config not found' }, { status: 404 });
 
     // 2. Fetch All Student Submissions from LMS DB
-    // Need to get answers for ALL students.
-    // Assuming 'assignment_submissions' -> 'assignment_answers'
     const submissions = await prisma.assignment_submissions.findMany({
       where: { assignment_id: parseInt(assignmentId) },
       include: {
@@ -50,18 +48,6 @@ export async function POST(request: NextRequest) {
     if (jobError) throw new Error('Failed to create job record');
 
     // 4. Start Background Processing (Fire and Forget or Queue)
-    // Since Vercel functions have timeouts (10s-60s), cannot await a loop of 50 students.
-    // must process in chunks or use a background queue (like Inngest/Trigger.dev).
-    // WITHOUT a queue service, can try to process a small batch or return early and let client poll/trigger batches.
-    // For this prototype, will process *asynchronously* without awaiting completion in the response, 
-    // BUT Vercel serverless might kill the process.
-    // **Safe approach for prototype**: Process first 3-5 here to show it works, or assume user will keep tab open if running locally.
-    // **Better approach**: The client should call "run-batch" with a subset, or accept the risk of timeout for small classes.
-    
-    // will initiate the loop but NOT await it for the response, hoping the runtime keeps it alive long enough 
-    // (Note: reliable only on VPS/Container, not Serverless). 
-    // For this specific request, I'll implement the loop but warn about timeouts.
-    
     (async () => {
         try {
             const rawRubric = acsData.rubric;
@@ -88,8 +74,6 @@ export async function POST(request: NextRequest) {
                      });
                 }
             }
-            
-            // Mark job complete
             await supabaseAdmin.from('acs_grading_jobs').update({ 
                 status: 'completed', 
                 completed_at: new Date().toISOString() 

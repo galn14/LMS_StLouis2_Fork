@@ -52,7 +52,6 @@ export async function POST(request: NextRequest) {
     
     if (filesError) {
         console.error('Error fetching uploaded files for cleanup:', filesError);
-        // Continue cleanup, but log error
     }
 
     const filesToDelete = uploadedFiles?.map(f => f.file_id) || [];

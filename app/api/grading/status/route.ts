@@ -19,7 +19,6 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, error: 'Job not found' }, { status: 404 });
   }
 
-  // Get progress count
   const { count } = await supabaseAdmin
     .from('acs_grading_results')
     .select('*', { count: 'exact', head: true })
