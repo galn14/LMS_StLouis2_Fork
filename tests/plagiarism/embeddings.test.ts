@@ -37,6 +37,7 @@ describe('generateEmbedding', () => {
       model: 'text-embedding-3-small',
       input: 'test text',
       encoding_format: 'float',
+      dimensions: 384,
     });
   });
 

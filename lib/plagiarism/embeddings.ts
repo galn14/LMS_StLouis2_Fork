@@ -35,6 +35,7 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResult> 
         model: EMBEDDING_MODEL,
         input: cleanText,
         encoding_format: 'float',
+        dimensions: 384,
       });
 
       const vector = response.data[0].embedding;
@@ -82,6 +83,7 @@ export async function generateEmbeddingsBatch(texts: string[]): Promise<{ vector
         model: EMBEDDING_MODEL,
         input: cleanTexts,
         encoding_format: 'float',
+        dimensions: 384,
       });
 
       // Sort results by index to ensure order matches input
