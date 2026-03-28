@@ -1,8 +1,16 @@
 
 import { queryLMS } from '@/lib/lms-db';
-import { supabaseAdmin } from '@/lib/supabase/server'; // Use admin client for writes
 import { chunkText } from '@/lib/plagiarism/text-processor';
 import { generateEmbeddingsBatch } from '@/lib/plagiarism/embeddings';
+import {
+  createDetection,
+  insertAuditLog,
+  insertChunksReturningIds,
+  insertComparisons,
+  insertEmbeddings,
+  insertFlags,
+  updateDetection,
+} from '@/lib/db2/pds-repo';
 import { 
   calculateCosineSimilarity, 
   calculateJaccardSimilarity, 
@@ -31,17 +39,11 @@ export async function detectPlagiarism(assignmentId: string, userId: string) {
 
   try {
     // 1. Create Detection Record
-    const { data: detectionData, error: detectionError } = await supabaseAdmin
-      .from('pds_detections')
-      .insert({
-        assignment_id: assignmentId,
-        status: 'processing',
-        created_by: userId
-      })
-      .select('id')
-      .single();
-
-    if (detectionError) throw new Error(`Failed to create detection record: ${detectionError.message}`);
+    const detectionData = await createDetection({
+      assignment_id: assignmentId,
+      status: 'processing',
+      created_by: userId,
+    });
     detectionId = detectionData.id;
 
     // 2. Fetch Submissions from LMS
@@ -66,10 +68,7 @@ export async function detectPlagiarism(assignmentId: string, userId: string) {
 
     const submissions = await queryLMS<SubmissionData>(sql, [numericAssignmentId]);
     
-    await supabaseAdmin
-      .from('pds_detections')
-      .update({ total_submissions: submissions.length })
-      .eq('id', detectionId);
+    await updateDetection(detectionId, { total_submissions: submissions.length });
 
     console.log(`[PDS] Processing ${submissions.length} submissions for assignment ${assignmentId}`);
 
@@ -95,22 +94,20 @@ export async function detectPlagiarism(assignmentId: string, userId: string) {
       }));
 
       // Insert chunks
-      const { data: insertedChunks, error: chunkError } = await supabaseAdmin
-        .from('pds_chunks')
-        .insert(chunksForDb)
-        .select('id, chunk_index'); // Select ID to map back
-      
-      if (chunkError) throw new Error(`Failed to insert chunks: ${chunkError.message}`);
+      const insertedChunks = await insertChunksReturningIds(chunksForDb);
 
       // Map DB IDs back to chunks
       const chunksWithIds = chunks.map(c => {
         const dbChunk = insertedChunks.find(ic => ic.chunk_index === c.chunk_index);
+        if (!dbChunk?.id) {
+          throw new Error(`Failed to map chunk index ${c.chunk_index} to a DB row`);
+        }
         return { ...c, id: dbChunk?.id };
       });
 
       // b. Generate Embeddings
       const chunkTexts = chunks.map(c => c.content);
-      const { vectors, totalTokens } = await generateEmbeddingsBatch(chunkTexts);
+      const { vectors } = await generateEmbeddingsBatch(chunkTexts);
 
       // c. Store Embeddings
       const embeddingsForDb = chunksWithIds.map((c, idx) => ({
@@ -119,11 +116,7 @@ export async function detectPlagiarism(assignmentId: string, userId: string) {
         model: 'text-embedding-3-small'
       }));
 
-      const { error: embedError } = await supabaseAdmin
-        .from('pds_embeddings')
-        .insert(embeddingsForDb);
-      
-      if (embedError) throw new Error(`Failed to store embeddings: ${embedError.message}`);
+      await insertEmbeddings(embeddingsForDb);
 
       // Store in memory for comparison step
       processedSubmissions.push({
@@ -134,10 +127,7 @@ export async function detectPlagiarism(assignmentId: string, userId: string) {
       processedCount++;
       // Update progress every 5 submissions
       if (processedCount % 5 === 0) {
-        await supabaseAdmin
-          .from('pds_detections')
-          .update({ processed_submissions: processedCount })
-          .eq('id', detectionId);
+        await updateDetection(detectionId, { processed_submissions: processedCount });
       }
     }
 
@@ -250,37 +240,28 @@ export async function detectPlagiarism(assignmentId: string, userId: string) {
 
     // Bulk Insert Comparisons
     if (comparisons.length > 0) {
-        const { error: compError } = await supabaseAdmin
-            .from('pds_comparisons')
-            .insert(comparisons);
-        if (compError) throw new Error(`Failed to insert comparisons: ${compError.message}`);
+        await insertComparisons(comparisons);
     }
 
     // Bulk Insert Flags
     if (flags.length > 0) {
-         const { error: flagError } = await supabaseAdmin
-            .from('pds_flags')
-            .insert(flags);
-         if (flagError) throw new Error(`Failed to insert flags: ${flagError.message}`);
+         await insertFlags(flags);
     }
 
     // 5. Complete
-    await supabaseAdmin
-      .from('pds_detections')
-      .update({ 
-        status: 'completed', 
-        completed_at: new Date().toISOString(),
-        processed_submissions: processedCount 
-      })
-      .eq('id', detectionId);
+    await updateDetection(detectionId, { 
+      status: 'completed', 
+      completed_at: new Date().toISOString(),
+      processed_submissions: processedCount,
+    });
     
     // Audit Log
-    await supabaseAdmin.from('pds_audit_logs').insert({
+    await insertAuditLog({
         user_id: userId,
         action: 'run_detection',
         entity_type: 'detection',
         entity_id: detectionId!,
-        metadata: { assignment_id: assignmentId, matches_found: comparisons.length }
+        metadata: { assignment_id: assignmentId, matches_found: comparisons.length },
     });
 
     return { success: true, detectionId, matches: comparisons.length };
@@ -289,13 +270,10 @@ export async function detectPlagiarism(assignmentId: string, userId: string) {
     console.error('[PDS] Detection failed:', error);
     
     if (detectionId) {
-      await supabaseAdmin
-        .from('pds_detections')
-        .update({ 
-            status: 'failed', 
-            error_message: error.message 
-        })
-        .eq('id', detectionId);
+      await updateDetection(detectionId, { 
+        status: 'failed', 
+        error_message: error.message,
+      });
     }
     throw error;
   }

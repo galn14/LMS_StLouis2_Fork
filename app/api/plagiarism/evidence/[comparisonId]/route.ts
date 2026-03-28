@@ -3,11 +3,14 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { queryLMS } from '@/lib/lms-db';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import {
+  getComparisonById,
+  getFlagByComparisonAndSubmission,
+} from '@/lib/db2/pds-repo';
 
 export async function GET(
   request: Request,
-  { params }: { params: { comparisonId: string } }
+  { params }: { params: Promise<{ comparisonId: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
@@ -17,24 +20,18 @@ export async function GET(
 
     const { comparisonId } = await params;
 
-    // 1. Fetch Comparison Data (Supabase)
-    const { data: comparison, error } = await supabaseAdmin
-      .from('pds_comparisons')
-      .select('*')
-      .eq('id', comparisonId)
-      .single();
+    // 1. Fetch Comparison Data (DB2)
+    const comparison = await getComparisonById(comparisonId);
 
-    if (error || !comparison) {
+    if (!comparison) {
       return NextResponse.json({ error: 'Comparison not found' }, { status: 404 });
     }
 
     // 2. Fetch Flag Data (if exists)
-    const { data: flag } = await supabaseAdmin
-      .from('pds_flags')
-      .select('*')
-      .eq('comparison_id', comparisonId)
-      .eq('submission_id', comparison.source_submission_id) // Get flag for source
-      .single();
+    const flag = await getFlagByComparisonAndSubmission(
+      comparisonId,
+      comparison.source_submission_id
+    );
 
     // 3. Fetch Full Text Content (LMS)
     // We need the full text for display, not just chunks.

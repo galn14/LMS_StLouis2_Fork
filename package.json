@@ -12,6 +12,7 @@
     "db:pull": "prisma db pull",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
+    "db2:migrate-supabase": "node scripts/migrate-db2-from-supabase.mjs",
     "test": "jest"
   },
   "dependencies": {

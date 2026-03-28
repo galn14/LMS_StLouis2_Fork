@@ -3,11 +3,13 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { openai } from '@/lib/openai';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import {
+  getAcsAssignmentByAssignmentId,
+  insertUploadedFiles,
+} from '@/lib/db2/acs-repo';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { pipeline } from 'stream/promises';
 
 export async function POST(request: NextRequest) {
   try {
@@ -39,14 +41,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Missing file or assignmentId' }, { status: 400 });
     }
 
-    // 3. Get Vector Store ID from Supabase
-    const { data: assignmentData, error: assignmentError } = await supabaseAdmin
-      .from('acs_assignments')
-      .select('vector_store_id')
-      .eq('assignment_id', assignmentId)
-      .single();
+    // 3. Get Vector Store ID from DB2
+    const assignmentData = await getAcsAssignmentByAssignmentId(assignmentId);
 
-    if (assignmentError || !assignmentData) {
+    if (!assignmentData) {
       return NextResponse.json({ success: false, error: 'Assignment not found or ACS not configured' }, { status: 404 });
     }
 
@@ -73,17 +71,17 @@ export async function POST(request: NextRequest) {
             file_id: openaiFile.id
         });
 
-        // 7. Record in Supabase
-        const { error: dbError } = await supabaseAdmin
-            .from('acs_uploaded_files')
-            .insert({
-                assignment_id: assignmentId,
-                file_id: openaiFile.id,
-                filename: file.name,
-            });
-
-        if (dbError) {
-            console.error('Error saving file record to Supabase:', dbError);
+        // 7. Record in DB2
+        try {
+          await insertUploadedFiles([
+            {
+              assignment_id: assignmentId,
+              file_id: openaiFile.id,
+              filename: file.name,
+            },
+          ]);
+        } catch (dbError) {
+            console.error('Error saving file record to DB2:', dbError);
         }
 
         return NextResponse.json({

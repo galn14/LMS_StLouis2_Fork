@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import {
+  createGradingJob,
+  getAcsAssignmentByAssignmentId,
+  updateGradingJobStatus,
+} from '@/lib/db2/acs-repo';
 import { gradeStudentAnswer } from '@/lib/grading-service';
 
 export async function POST(request: NextRequest) {
@@ -14,13 +18,9 @@ export async function POST(request: NextRequest) {
     const { assignmentId } = body;
 
     // 1. Fetch ACS Config
-    const { data: acsData, error: acsError } = await supabaseAdmin
-      .from('acs_assignments')
-      .select('*')
-      .eq('assignment_id', assignmentId)
-      .single();
+    const acsData = await getAcsAssignmentByAssignmentId(assignmentId);
 
-    if (acsError || !acsData) return NextResponse.json({ success: false, error: 'ACS Config not found' }, { status: 404 });
+    if (!acsData) return NextResponse.json({ success: false, error: 'ACS Config not found' }, { status: 404 });
 
     // 2. Fetch All Student Submissions from LMS DB
     const submissions = await prisma.assignment_submissions.findMany({
@@ -35,17 +35,11 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. Create Job Record
-    const { data: jobData, error: jobError } = await supabaseAdmin
-      .from('acs_grading_jobs')
-      .insert({
-        assignment_id: assignmentId,
-        total_students: submissions.length,
-        status: 'running'
-      })
-      .select()
-      .single();
-    
-    if (jobError) throw new Error('Failed to create job record');
+    const jobData = await createGradingJob({
+      assignment_id: assignmentId,
+      total_students: submissions.length,
+      status: 'running',
+    });
 
     // 4. Start Background Processing (Fire and Forget or Queue)
     (async () => {
@@ -74,14 +68,11 @@ export async function POST(request: NextRequest) {
                      });
                 }
             }
-            await supabaseAdmin.from('acs_grading_jobs').update({ 
-                status: 'completed', 
-                completed_at: new Date().toISOString() 
-            }).eq('id', jobData.id);
+            await updateGradingJobStatus(jobData.id, 'completed', new Date().toISOString());
 
         } catch (err) {
              console.error('Background grading failed:', err);
-             await supabaseAdmin.from('acs_grading_jobs').update({ status: 'failed' }).eq('id', jobData.id);
+             await updateGradingJobStatus(jobData.id, 'failed');
         }
     })();
 

@@ -2,7 +2,11 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import {
+  insertAuditLog,
+  insertTeacherAction,
+  updateFlag,
+} from '@/lib/db2/pds-repo';
 
 export async function POST(request: Request) {
   try {
@@ -24,47 +28,40 @@ export async function POST(request: Request) {
     }
 
     // 1. Update Flag
-    const { data: updatedFlag, error: flagError } = await supabaseAdmin
-      .from('pds_flags')
-      .update({
+    const updatedFlag = await updateFlag(flag_id, {
         reviewed: true,
         reviewed_at: new Date().toISOString(),
         reviewed_by: session.user.id,
         status: is_false_positive ? 'false_positive' : 'reviewed',
         is_false_positive: !!is_false_positive,
         teacher_notes: notes,
-        action_taken: action
-      })
-      .eq('id', flag_id)
-      .select()
-      .single();
+        action_taken: action,
+      });
 
-    if (flagError) {
-      throw new Error(`Failed to update flag: ${flagError.message}`);
+    if (!updatedFlag) {
+      throw new Error('Failed to update flag');
     }
 
     // 2. Log Teacher Action
-    const { error: actionError } = await supabaseAdmin
-      .from('pds_teacher_actions')
-      .insert({
+    try {
+      await insertTeacherAction({
         flag_id: flag_id,
         teacher_id: session.user.id,
         action: action, // e.g., 'marked_false_positive', 'warning_sent'
-        notes: notes
+        notes: notes,
       });
-
-    if (actionError) {
+    } catch (actionError) {
        console.error('Failed to log teacher action:', actionError);
        // Non-blocking error, we continue
     }
 
     // 3. Log Audit
-    await supabaseAdmin.from('pds_audit_logs').insert({
+    await insertAuditLog({
       user_id: session.user.id,
       action: 'update_flag',
       entity_type: 'flag',
       entity_id: flag_id,
-      metadata: { action, is_false_positive }
+      metadata: { action, is_false_positive },
     });
 
     return NextResponse.json({ success: true, flag: updatedFlag });

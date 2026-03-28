@@ -1,5 +1,5 @@
 import { openai } from '@/lib/openai';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import { insertGradingResult, insertTokenUsage } from '@/lib/db2/acs-repo';
 import { GradingResult, Rubric } from '@/lib/types';
 
 interface GradeStudentParams {
@@ -94,9 +94,9 @@ export async function gradeStudentAnswer({
         };
     }
 
-    // 6. Save Result to Supabase
+    // 6. Save Result to DB2
     if (gradingResult) {
-      const { error } = await supabaseAdmin.from('acs_grading_results').insert({
+      await insertGradingResult({
         job_id: jobId,
         assignment_id: assignmentId,
         student_id: studentId,
@@ -105,13 +105,11 @@ export async function gradeStudentAnswer({
         max_score: gradingResult.max_score,
         qualitative_grade: gradingResult.qualitative_grade,
         feedback: gradingResult.feedback,
-        citations: JSON.stringify(gradingResult.citations),
+        citations: gradingResult.citations,
         confidence: gradingResult.confidence,
-        rubric_alignment: JSON.stringify(gradingResult.rubric_alignment),
+        rubric_alignment: gradingResult.rubric_alignment,
         language_detected: gradingResult.language_detected,
       });
-      
-      if (error) console.error('Error saving grading result:', error);
     }
 
     // 7. Track Token Usage
@@ -120,12 +118,12 @@ export async function gradeStudentAnswer({
         // Update with actual pricing for gpt-4o if needed ($5 input, $15 output)
         const cost = (totalTokens / 1000000) * 10; // Averaging to $10/1M for simplicity
 
-        await supabaseAdmin.from('acs_token_usage').insert({
-            job_id: jobId,
-            assignment_id: assignmentId,
-            student_id: studentId,
-            tokens_used: totalTokens,
-            estimated_cost: cost
+        await insertTokenUsage({
+          job_id: jobId,
+          assignment_id: assignmentId,
+          student_id: studentId,
+          tokens_used: totalTokens,
+          estimated_cost: cost,
         });
     }
 

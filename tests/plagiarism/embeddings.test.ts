@@ -156,40 +156,32 @@ describe('generateEmbeddingsBatch', () => {
 });
 
 import { storeEmbedding } from '@/lib/plagiarism/embeddings';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import { insertEmbedding } from '@/lib/db2/pds-repo';
 
-jest.mock('@/lib/supabase/server', () => ({
-  supabaseAdmin: {
-    from: jest.fn().mockReturnThis(),
-    insert: jest.fn(),
-  },
+jest.mock('@/lib/db2/pds-repo', () => ({
+  insertEmbedding: jest.fn(),
 }));
 
 describe('storeEmbedding', () => {
-  const mockInsert = supabaseAdmin.from('').insert as jest.Mock;
-  const mockFrom = supabaseAdmin.from as jest.Mock;
+  const mockInsertEmbedding = insertEmbedding as jest.Mock;
 
   beforeEach(() => {
-    mockInsert.mockClear();
-    mockFrom.mockClear();
-    // Re-setup the chain
-    mockFrom.mockReturnValue({ insert: mockInsert });
-    mockInsert.mockResolvedValue({ error: null });
+    mockInsertEmbedding.mockClear();
+    mockInsertEmbedding.mockResolvedValue(undefined);
   });
 
   it('should store embedding successfully', async () => {
     await storeEmbedding('chunk-123', [0.1, 0.2, 0.3]);
 
-    expect(mockFrom).toHaveBeenCalledWith('pds_embeddings');
-    expect(mockInsert).toHaveBeenCalledWith({
-      chunk_id: 'chunk-123',
-      vector: [0.1, 0.2, 0.3],
-      model: 'text-embedding-3-small'
-    });
+    expect(mockInsertEmbedding).toHaveBeenCalledWith(
+      'chunk-123',
+      [0.1, 0.2, 0.3],
+      'text-embedding-3-small'
+    );
   });
 
-  it('should throw error on supabase failure', async () => {
-    mockInsert.mockResolvedValue({ error: { message: 'Database error' } });
+  it('should throw error on DB2 failure', async () => {
+    mockInsertEmbedding.mockRejectedValue(new Error('Database error'));
 
     await expect(storeEmbedding('chunk-123', [0.1])).rejects.toThrow('Failed to store embedding for chunk chunk-123: Database error');
   });

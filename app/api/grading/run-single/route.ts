@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
-import { prisma } from '@/lib/prisma';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import { getAcsAssignmentByAssignmentId } from '@/lib/db2/acs-repo';
 import { gradeStudentAnswer } from '@/lib/grading-service';
 import { Rubric } from '@/lib/types';
 
@@ -17,13 +16,9 @@ export async function POST(request: NextRequest) {
     const { assignmentId, studentId, questionId, studentAnswer } = body;
 
     // 1. Get Assistant & Rubric Config
-    const { data: acsData, error: acsError } = await supabaseAdmin
-      .from('acs_assignments')
-      .select('assistant_id, rubric')
-      .eq('assignment_id', assignmentId)
-      .single();
+    const acsData = await getAcsAssignmentByAssignmentId(assignmentId);
 
-    if (acsError || !acsData) {
+    if (!acsData) {
       return NextResponse.json({ success: false, error: 'ACS configuration not found' }, { status: 404 });
     }
     

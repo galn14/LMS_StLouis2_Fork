@@ -3,11 +3,11 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { queryLMS } from '@/lib/lms-db';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import { getComparisonsBySourceSubmissionIds } from '@/lib/db2/pds-repo';
 
 export async function GET(
   request: Request,
-  { params }: { params: { assignmentId: string } }
+  { params }: { params: Promise<{ assignmentId: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
@@ -32,10 +32,7 @@ export async function GET(
     const submissionIds = submissions.map(s => s.submission_id);
 
     // 2. Fetch Comparisons
-    const { data: comparisons } = await supabaseAdmin
-      .from('pds_comparisons')
-      .select('source_submission_id, target_submission_id, combined_score, risk_level')
-      .in('source_submission_id', submissionIds);
+    const comparisons = await getComparisonsBySourceSubmissionIds(submissionIds);
 
     // 3. Transform to CSV-friendly format
     // Row per match: Source Name, Target Name, Similarity %, Risk Level
@@ -49,7 +46,7 @@ export async function GET(
     // Wait, compareSubmissions in detection.ts only compared within the same assignment batch. 
     // So targets are in 'submissions' list.
     
-    const rows = (comparisons || []).map(comp => ({
+    const rows = comparisons.map(comp => ({
       SourceStudent: nameMap.get(comp.source_submission_id) || 'Unknown',
       TargetStudent: nameMap.get(comp.target_submission_id) || 'Unknown',
       Similarity: (comp.combined_score * 100).toFixed(2) + '%',

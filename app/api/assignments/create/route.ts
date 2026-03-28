@@ -3,7 +3,11 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
 // import { openai } from '@/lib/openai';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import {
+  getAcsAssignmentByAssignmentId,
+  insertUploadedFiles,
+  upsertAcsAssignment,
+} from '@/lib/db2/acs-repo';
 import fs from 'fs';
 import path from 'path';
 import { OpenAI } from 'openai';
@@ -39,18 +43,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 3.1 Check if assignment already exists
-    const { data: existingAssignment, error: existingAssignmentError } = await supabaseAdmin
-      .from('acs_assignments')
-      .select('id, assistant_id, vector_store_id, status')
-      .eq('assignment_id', assignmentId.toString())
-      .maybeSingle();
-
-    if (existingAssignmentError) {
-      return NextResponse.json(
-        { success: false, error: 'Failed to check existing assignment', details: existingAssignmentError.message },
-        { status: 500 }
-      );
-    }
+    const existingAssignment = await getAcsAssignmentByAssignmentId(assignmentId.toString());
 
     const isRerun = Boolean(existingAssignment);
 
@@ -162,52 +155,44 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // 7. Save to Supabase
+    // 7. Save to DB2
     const rerunFields = isRerun
-      ? { rerun_grading: 'true', rerun_grading_at: new Date().toISOString(), archived_at: null }
-      : { rerun_grading: 'false' as const };
+      ? { rerun_grading: true, rerun_grading_at: new Date().toISOString(), archived_at: null }
+      : { rerun_grading: false, rerun_grading_at: null, archived_at: null };
 
-    const { data, error } = await supabaseAdmin
-      .from('acs_assignments')
-      .upsert(
-        {
-          assignment_id: assignmentId.toString(), // Ensure string format
-          course_id: courseId.toString(),
-          assistant_id: assistant.id,
-          vector_store_id: vectorStore.id,
-          rubric: rubric,
-          created_by: session.user.id,
-          status: 'setup',
-          ...rerunFields,
-        },
-        { onConflict: 'assignment_id' }
-      )
-      .select()
-      .single();
-
-    if (error) {
+    let data;
+    try {
+      data = await upsertAcsAssignment({
+        assignment_id: assignmentId.toString(),
+        course_id: courseId.toString(),
+        assistant_id: assistant.id,
+        vector_store_id: vectorStore.id,
+        rubric,
+        created_by: session.user.id,
+        status: 'setup',
+        ...rerunFields,
+      });
+    } catch (error: any) {
         // Cleanup OpenAI resources if DB save fails
         await openai.beta.assistants.delete(assistant.id);
         await openai.vectorStores.delete(vectorStore.id);
         
-        console.error('Supabase error:', error);
-        return NextResponse.json({ success: false, error: 'Database error', details: (error as any)?.message ?? String(error) }, { status: 500 });
+        console.error('DB2 error:', error);
+        return NextResponse.json({ success: false, error: 'Database error', details: error?.message ?? String(error) }, { status: 500 });
     }
 
-    // 7.5 Save uploaded file records to Supabase
+    // 7.5 Save uploaded file records to DB2
     if (uploadedFileRecords.length > 0) {
         const fileInserts = uploadedFileRecords.map(rec => ({
             assignment_id: assignmentId.toString(),
             file_id: rec.file_id,
             filename: rec.filename,
-            type_file: rec.type_file
+            type_file: rec.type_file,
         }));
-        
-        const { error: fileError } = await supabaseAdmin
-            .from('acs_uploaded_files')
-            .insert(fileInserts);
-            
-        if (fileError) {
+
+        try {
+          await insertUploadedFiles(fileInserts);
+        } catch (fileError) {
             console.error('Failed to record uploaded files in DB:', fileError);
         }
     }

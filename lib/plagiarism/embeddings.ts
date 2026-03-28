@@ -1,6 +1,6 @@
 
 import { openai } from '@/lib/openai';
-import { supabaseAdmin as supabase } from '@/lib/supabase/server';
+import { insertEmbedding } from '@/lib/db2/pds-repo';
 
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 const MAX_RETRIES = 5;
@@ -115,21 +115,15 @@ export async function generateEmbeddingsBatch(texts: string[]): Promise<{ vector
 }
 
 /**
- * Stores a vector embedding in the Supabase `pds_embeddings` table.
+ * Stores a vector embedding in DB2 `pds_embeddings`.
  *
  * @param chunkId - The UUID of the chunk in `pds_chunks`.
  * @param vector - The 384-dimensional embedding vector.
  */
 export async function storeEmbedding(chunkId: string, vector: number[]) {
-  const { error } = await supabase
-    .from('pds_embeddings')
-    .insert({
-      chunk_id: chunkId,
-      vector: vector,
-      model: EMBEDDING_MODEL
-    });
-
-  if (error) {
+  try {
+    await insertEmbedding(chunkId, vector, EMBEDDING_MODEL);
+  } catch (error: any) {
     throw new Error(`Failed to store embedding for chunk ${chunkId}: ${error.message}`);
   }
 }

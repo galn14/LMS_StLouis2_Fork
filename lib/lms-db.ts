@@ -1,18 +1,26 @@
 
 import { Pool } from 'pg';
 
-// Use LMS_POSTGRES_URL if available (for separate DB architecture), 
-// otherwise fall back to DATABASE_URL (monolith architecture)
-const connectionString = process.env.DATABASE_URL;
+let lmsPool: Pool | null = null;
 
-if (!connectionString) {
-  throw new Error('Missing LMS_POSTGRES_URL or DATABASE_URL environment variable');
+function getLmsPool() {
+  if (lmsPool) {
+    return lmsPool;
+  }
+
+  const connectionString = process.env.LMS_POSTGRES_URL || process.env.DATABASE_URL;
+
+  if (!connectionString) {
+    throw new Error('Missing LMS_POSTGRES_URL or DATABASE_URL environment variable');
+  }
+
+  lmsPool = new Pool({
+    connectionString,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+  });
+
+  return lmsPool;
 }
-
-const lmsPool = new Pool({
-  connectionString,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-});
 
 /**
  * Executes a read-only SELECT query against the LMS database.
@@ -37,7 +45,8 @@ export async function queryLMS<T = any>(sql: string, params: any[] = []): Promis
     throw new Error('Only SELECT queries are allowed on the LMS database via this client.');
   }
 
-  const client = await lmsPool.connect();
+  const pool = getLmsPool();
+  const client = await pool.connect();
   try {
     const result = await client.query(sql, params);
     return result.rows;

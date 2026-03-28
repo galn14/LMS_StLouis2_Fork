@@ -3,7 +3,11 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
 import { openai } from '@/lib/openai';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import {
+  archiveAcsAssignment,
+  getAcsAssignmentByAssignmentId,
+  getUploadedFilesByAssignmentId,
+} from '@/lib/db2/acs-repo';
 
 export async function POST(request: NextRequest) {
   try {
@@ -35,24 +39,13 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. Get ACS Assignment details and uploaded files
-    const { data: acsAssignment, error: acsError } = await supabaseAdmin
-      .from('acs_assignments')
-      .select('id, assistant_id, vector_store_id')
-      .eq('assignment_id', assignmentId)
-      .single();
+    const acsAssignment = await getAcsAssignmentByAssignmentId(assignmentId);
 
-    if (acsError || !acsAssignment) {
+    if (!acsAssignment) {
       return NextResponse.json({ success: false, error: 'ACS Assignment not found' }, { status: 404 });
     }
 
-    const { data: uploadedFiles, error: filesError } = await supabaseAdmin
-      .from('acs_uploaded_files')
-      .select('file_id')
-      .eq('assignment_id', assignmentId);
-    
-    if (filesError) {
-        console.error('Error fetching uploaded files for cleanup:', filesError);
-    }
+    const uploadedFiles = await getUploadedFilesByAssignmentId(assignmentId);
 
     const filesToDelete = uploadedFiles?.map(f => f.file_id) || [];
 
@@ -94,16 +87,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 5. Update assignment status in Supabase
-    const { error: updateError } = await supabaseAdmin
-      .from('acs_assignments')
-      .update({ status: 'archived', archived_at: new Date().toISOString() })
-      .eq('assignment_id', assignmentId);
-
-    if (updateError) {
-        console.error('Failed to update ACS assignment status to archived:', updateError);
-    } else {
+    // 5. Update assignment status in DB2
+    try {
+        await archiveAcsAssignment(assignmentId, new Date().toISOString());
         cleanupResults.assignmentStatusUpdate = 'success';
+    } catch (updateError) {
+        console.error('Failed to update ACS assignment status to archived:', updateError);
     }
 
     return NextResponse.json({ success: true, cleanupDetails: cleanupResults });

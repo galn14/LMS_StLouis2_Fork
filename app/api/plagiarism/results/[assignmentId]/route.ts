@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { queryLMS } from '@/lib/lms-db';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import { getComparisonsBySourceSubmissionIds } from '@/lib/db2/pds-repo';
 
 interface StudentResult {
   student_id: string;
@@ -17,7 +17,7 @@ interface StudentResult {
 
 export async function GET(
   request: Request,
-  { params }: { params: { assignmentId: string } }
+  { params }: { params: Promise<{ assignmentId: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
@@ -52,25 +52,15 @@ export async function GET(
       return NextResponse.json([]);
     }
 
-    // 2. Fetch all comparisons for these submissions from Supabase
+    // 2. Fetch all comparisons for these submissions from DB2
     const submissionIds = submissions.map(s => s.submission_id);
-    
-    // We want to count risks for each submission (as source)
-    // Query pds_comparisons where source_submission_id IN (...)
-    const { data: comparisons, error } = await supabaseAdmin
-      .from('pds_comparisons')
-      .select('source_submission_id, risk_level, combined_score')
-      .in('source_submission_id', submissionIds);
-
-    if (error) {
-      throw new Error(`Failed to fetch comparisons: ${error.message}`);
-    }
+    const comparisons = await getComparisonsBySourceSubmissionIds(submissionIds);
 
     // 3. Aggregate results
     // Map: submission_id -> stats
     const statsMap = new Map<string, { high: number, medium: number, low: number, max: number }>();
 
-    comparisons?.forEach(comp => {
+    comparisons.forEach(comp => {
       const current = statsMap.get(comp.source_submission_id) || { high: 0, medium: 0, low: 0, max: 0 };
       
       if (comp.risk_level === 'HIGH') current.high++;

@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { queryLMS } from '@/lib/lms-db';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import { getComparisonsBySourceSubmissionId } from '@/lib/db2/pds-repo';
 
 interface SimilarityMatch {
   comparison_id: string;
@@ -15,7 +15,7 @@ interface SimilarityMatch {
 
 export async function GET(
   request: Request,
-  { params }: { params: { submissionId: string } }
+  { params }: { params: Promise<{ submissionId: string }> }
 ) {
   try {
     const session = await getServerSession(authOptions);
@@ -41,16 +41,10 @@ export async function GET(
     
     const studentName = studentData[0].name;
 
-    // 2. Fetch Comparisons from Supabase
-    const { data: comparisons, error } = await supabaseAdmin
-      .from('pds_comparisons')
-      .select('id, target_submission_id, combined_score, risk_level, matched_chunks')
-      .eq('source_submission_id', submissionId)
-      .order('combined_score', { ascending: false });
+    // 2. Fetch Comparisons from DB2
+    const comparisons = await getComparisonsBySourceSubmissionId(submissionId);
 
-    if (error) throw new Error(error.message);
-
-    if (!comparisons || comparisons.length === 0) {
+    if (comparisons.length === 0) {
       return NextResponse.json({
         student_name: studentName,
         submission_id: submissionId,
@@ -60,7 +54,7 @@ export async function GET(
 
     // 3. Fetch Target Student Names (LMS)
     // We have target_submission_ids, need to resolve to names
-    const targetSubIds = comparisons.map(c => parseInt(c.target_submission_id));
+    const targetSubIds = comparisons.map(c => parseInt(c.target_submission_id, 10));
     // Use ANY($1) for array params in Postgres
     const targetSql = `
       SELECT s.id::text as submission_id, u.nama_lengkap as name

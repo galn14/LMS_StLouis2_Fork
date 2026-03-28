@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase/server';
+import {
+  countGradingResultsByJobId,
+  getGradingJobById,
+  getGradingResultsByJobId,
+} from '@/lib/db2/acs-repo';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -9,35 +13,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, error: 'Missing jobId' }, { status: 400 });
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('acs_grading_jobs')
-    .select('*')
-    .eq('id', jobId)
-    .single();
+  const data = await getGradingJobById(jobId);
 
-  if (error) {
+  if (!data) {
     return NextResponse.json({ success: false, error: 'Job not found' }, { status: 404 });
   }
 
-  const { count } = await supabaseAdmin
-    .from('acs_grading_results')
-    .select('*', { count: 'exact', head: true })
-    .eq('job_id', jobId);
-
-  const studentGradeFeedback = await supabaseAdmin
-    .from('acs_grading_results')
-    .select('student_id, question_id, score, feedback')
-    .eq('job_id', jobId);
-
-  const resultData = await supabaseAdmin
-    .from('acs_grading_jobs')
-    .select('total_students')
-    .eq('id', jobId)
-    .single();
-
-  if (resultData.error) {
-    return NextResponse.json({ success: false, error: 'Could not fetch total students' }, { status: 500 });
-  }
+  const count = await countGradingResultsByJobId(jobId);
+  const studentGradeFeedback = await getGradingResultsByJobId(jobId);
 
   return NextResponse.json({
     success: true,
@@ -45,8 +28,9 @@ export async function GET(request: NextRequest) {
       ...data,
       items_processed: count
     },
-    resultData: resultData.data,
-    studentGradeFeedback: studentGradeFeedback.data
+    resultData: {
+      total_students: data.total_students,
+    },
+    studentGradeFeedback
   });
 }
-
