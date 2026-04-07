@@ -279,10 +279,17 @@ export async function getGradingResultsByJobId(jobId: string) {
     student_id: string;
     question_id: string;
     score: number | null;
+    max_score: number;
+    qualitative_grade: string | null;
     feedback: string;
+    citations: unknown;
+    confidence: string;
+    rubric_alignment: unknown;
+    language_detected: string;
   }>(
     `
-      SELECT student_id, question_id, score, feedback
+      SELECT student_id, question_id, score, max_score, qualitative_grade,
+             feedback, citations, confidence, rubric_alignment, language_detected
       FROM acs_grading_results
       WHERE job_id = $1
       ORDER BY student_id ASC, question_id ASC

@@ -4,6 +4,8 @@ import { AssignmentProvider } from '@/lib/contexts/AssignmentContext';
 import AssignmentCreateModal from './assignment/assignment-create-modal';
 import AssignmentDetailModal from './assignment/assignment-detail-modal';
 import { GradingModal } from './assignment/GradingModal';
+import { PlagiarismModal } from './assignment/PlagiarismModal';
+import { AutoGradingModal } from './assignment/AutoGradingModal';
 import { AssignmentHeader } from './assignment/AssignmentHeader';
 import { AssignmentGrid } from './assignment/AssignmentGrid';
 import { EmptyState } from './assignment/EmptyState';
@@ -25,6 +27,8 @@ export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabPr
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showGradingModal, setShowGradingModal] = useState(false);
+  const [showPlagiarismModal, setShowPlagiarismModal] = useState(false);
+  const [showAutoGradingModal, setShowAutoGradingModal] = useState(false);
   const [selectedAssignment, setSelectedAssignment] = useState<Assignment | null>(null);
 
   // Custom hooks
@@ -63,6 +67,18 @@ export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabPr
     e.stopPropagation();
     setSelectedAssignment(assignment);
     setShowGradingModal(true);
+  };
+
+  const handlePlagiarismClick = (assignment: Assignment, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedAssignment(assignment);
+    setShowPlagiarismModal(true);
+  };
+
+  const handleAutoGradeClick = (assignment: Assignment, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedAssignment(assignment);
+    setShowAutoGradingModal(true);
   };
 
   const handleBulkPublishWrapper = async (publish: boolean) => {
@@ -120,6 +136,8 @@ export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabPr
             onEditClick={handleEditClick}
             onPublishToggle={handlePublishToggleWrapper}
             onGradeClick={isTeacher ? handleGradeClick : undefined}
+            onPlagiarismClick={isTeacher ? handlePlagiarismClick : undefined}
+            onAutoGradeClick={isTeacher ? handleAutoGradeClick : undefined}
           />
         )}
 
@@ -168,6 +186,29 @@ export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabPr
             isOpen={showGradingModal}
             onClose={() => {
               setShowGradingModal(false);
+              setSelectedAssignment(null);
+            }}
+          />
+        )}
+
+        {isTeacher && selectedAssignment && (
+          <PlagiarismModal
+            assignment={selectedAssignment}
+            isOpen={showPlagiarismModal}
+            onClose={() => {
+              setShowPlagiarismModal(false);
+              setSelectedAssignment(null);
+            }}
+          />
+        )}
+
+        {isTeacher && selectedAssignment && (
+          <AutoGradingModal
+            assignment={selectedAssignment}
+            courseCode={courseCode}
+            isOpen={showAutoGradingModal}
+            onClose={() => {
+              setShowAutoGradingModal(false);
               setSelectedAssignment(null);
             }}
           />

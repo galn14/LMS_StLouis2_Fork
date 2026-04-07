@@ -1,0 +1,744 @@
+import React, { useState, useEffect } from 'react';
+import { Assignment } from '../../../../hooks/useAssignmentData';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import {
+  FaRobot,
+  FaPlay,
+  FaSpinner,
+  FaArrowLeft,
+  FaArrowRight,
+  FaCheckCircle,
+  FaExclamationTriangle,
+  FaUser,
+  FaChevronDown,
+  FaChevronUp,
+  FaCheck,
+} from 'react-icons/fa';
+
+interface AutoGradingModalProps {
+  assignment: Assignment;
+  courseCode: string;
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+interface GradingResult {
+  student_id: string;
+  question_id: string;
+  score: number | null;
+  max_score: number;
+  qualitative_grade: string | null;
+  feedback: string;
+  citations: string[];
+  confidence: 'low' | 'medium' | 'high';
+  rubric_alignment: Record<string, string>;
+  language_detected: string;
+}
+
+interface RubricEntry {
+  questionId: number;
+  questionText: string;
+  maxScore: number;
+  criteria: { name: string; weight: number }[];
+}
+
+interface JobStatus {
+  id: string;
+  total_students: number;
+  status: string;
+  completed_at: string | null;
+  items_processed: number;
+}
+
+// Step: 1 = pick questions, 2 = set rubric, 3 = confirm+run, 4 = results
+type Step = 1 | 2 | 3 | 4;
+
+function confidenceLabel(conf: string) {
+  if (conf === 'high') return { text: 'AI is confident', color: 'text-green-700', bg: 'bg-green-50 border-green-200', icon: '✅' };
+  if (conf === 'medium') return { text: 'Review recommended', color: 'text-yellow-700', bg: 'bg-yellow-50 border-yellow-200', icon: '🔍' };
+  return { text: 'Manual review needed', color: 'text-red-700', bg: 'bg-red-50 border-red-200', icon: '⚠️' };
+}
+
+function gradeColor(grade: string | null) {
+  if (grade === 'Excellent') return 'text-green-700 bg-green-50';
+  if (grade === 'Good') return 'text-blue-700 bg-blue-50';
+  if (grade === 'Fair') return 'text-yellow-700 bg-yellow-50';
+  if (grade === 'Poor') return 'text-red-700 bg-red-50';
+  return 'text-gray-600 bg-gray-50';
+}
+
+export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: AutoGradingModalProps) => {
+  const [step, setStep] = useState<Step>(1);
+
+  // Step 1 state — select questions
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<number[]>([]);
+  const essayQuestions = (assignment.questions || []).filter((q: any) => {
+    // API returns question_type (enumeration name string) since we added it to the assignments route
+    const type = (q.question_type || q.enumeration?.name || '').toUpperCase().replace(/[_ ]/g, '_');
+    return type === 'ESSAY' || type === 'FILE_UPLOAD';
+  });
+
+  // Step 2 state — rubric config
+  const [rubric, setRubric] = useState<RubricEntry[]>([]);
+
+  // Step 3/4 state — grading
+  const [grading, setGrading] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
+  const [results, setResults] = useState<GradingResult[]>([]);
+  const [gradingError, setGradingError] = useState<string | null>(null);
+
+  // Step 4 — expanded student cards
+  const [expandedStudents, setExpandedStudents] = useState<Set<string>>(new Set());
+
+  // Apply to gradebook
+  const [applying, setApplying] = useState(false);
+  const [applied, setApplied] = useState(false);
+
+  // Reset on open
+  useEffect(() => {
+    if (isOpen && assignment) {
+      setStep(1);
+      setSelectedQuestionIds([]);
+      setRubric([]);
+      setJobId(null);
+      setJobStatus(null);
+      setResults([]);
+      setGradingError(null);
+      setApplied(false);
+      setExpandedStudents(new Set());
+    }
+  }, [isOpen, assignment?.id]);
+
+  // Poll job status
+  useEffect(() => {
+    if (!jobId || jobStatus?.status === 'completed' || jobStatus?.status === 'failed') return;
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/grading/status?jobId=${jobId}`);
+        const data = await res.json();
+        if (data.success) {
+          setJobStatus(data.data);
+          if (data.studentGradeFeedback?.length) setResults(data.studentGradeFeedback);
+          if (data.data.status === 'completed' || data.data.status === 'failed') {
+            setGrading(false);
+            setStep(4);
+          }
+        }
+      } catch { /* keep polling */ }
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [jobId, jobStatus?.status]);
+
+  // ── Step 1: toggle question selection ──
+  const toggleQuestion = (id: number) => {
+    setSelectedQuestionIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const selectAll = () => setSelectedQuestionIds(essayQuestions.map((q: any) => q.id));
+  const clearAll = () => setSelectedQuestionIds([]);
+
+  // ── Step 1 → 2: build rubric entries for selected questions ──
+  const proceedToRubric = () => {
+    const entries: RubricEntry[] = essayQuestions
+      .filter((q: any) => selectedQuestionIds.includes(q.id))
+      .map((q: any) => ({
+        questionId: q.id,
+        questionText: q.question_text || `Question ${q.id}`,
+        maxScore: q.points || 10,
+        criteria: [
+          { name: 'Content & Accuracy', weight: 40 },
+          { name: 'Critical Thinking', weight: 30 },
+          { name: 'Writing Quality', weight: 20 },
+          { name: 'Completeness', weight: 10 },
+        ],
+      }));
+    setRubric(entries);
+    setStep(2);
+  };
+
+  // ── Rubric helpers ──
+  const updateWeight = (qIdx: number, cIdx: number, val: number) => {
+    setRubric(prev => {
+      const updated = prev.map((e, i) => {
+        if (i !== qIdx) return e;
+        const criteria = e.criteria.map((c, j) => j === cIdx ? { ...c, weight: val } : c);
+        return { ...e, criteria };
+      });
+      return updated;
+    });
+  };
+
+  const updateName = (qIdx: number, cIdx: number, val: string) => {
+    setRubric(prev => prev.map((e, i) => {
+      if (i !== qIdx) return e;
+      const criteria = e.criteria.map((c, j) => j === cIdx ? { ...c, name: val } : c);
+      return { ...e, criteria };
+    }));
+  };
+
+  const addCriterion = (qIdx: number) => {
+    setRubric(prev => prev.map((e, i) =>
+      i === qIdx ? { ...e, criteria: [...e.criteria, { name: 'New Criterion', weight: 10 }] } : e
+    ));
+  };
+
+  const removeCriterion = (qIdx: number, cIdx: number) => {
+    setRubric(prev => prev.map((e, i) => {
+      if (i !== qIdx) return e;
+      return { ...e, criteria: e.criteria.filter((_, j) => j !== cIdx) };
+    }));
+  };
+
+  const totalWeight = (entry: RubricEntry) => entry.criteria.reduce((s, c) => s + c.weight, 0);
+
+  // ── Step 3: run grading ──
+  const runGrading = async () => {
+    setGrading(true);
+    setGradingError(null);
+    setResults([]);
+    setJobStatus(null);
+
+    // Build API rubric format
+    const apiRubric = rubric.map(e => ({
+      questionId: e.questionId,
+      max_score: e.maxScore,
+      criteria: Object.fromEntries(e.criteria.map(c => [c.name, c.weight])),
+      qualitative_scale: ['Excellent', 'Good', 'Fair', 'Poor'],
+    }));
+
+    // First, setup ACS (or re-run)
+    try {
+      const courseRes = await fetch(`/api/courses/${courseCode}`);
+      const courseData = await courseRes.json();
+      // /api/courses/[code] returns { success: true, data: { id: number, ... } }
+      const courseId = courseData?.data?.id || courseCode;
+
+      const setupRes = await fetch('/api/assignments/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignmentId: assignment.id, courseId, rubric: apiRubric }),
+      });
+      const setupData = await setupRes.json();
+      if (!setupData.success) {
+        setGrading(false);
+        setGradingError(setupData.error || 'Could not set up AI grading. Please try again.');
+        return;
+      }
+    } catch {
+      setGrading(false);
+      setGradingError('Connection error during setup. Please try again.');
+      return;
+    }
+
+    // Then, kick off grading job
+    try {
+      const res = await fetch('/api/grading/run-all', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assignmentId: assignment.id.toString() }),
+      });
+      const data = await res.json();
+      if (data.success && data.jobId) {
+        setJobId(data.jobId);
+        setJobStatus({ id: data.jobId, total_students: 0, status: 'running', completed_at: null, items_processed: 0 });
+      } else {
+        setGrading(false);
+        setGradingError(data.error || data.message || 'Could not start grading. Please check that students have submitted essays.');
+      }
+    } catch {
+      setGrading(false);
+      setGradingError('Connection error. Please try again.');
+    }
+  };
+
+  // ── Apply scores to gradebook ──
+  const applyToGradebook = async () => {
+    if (!jobId) return;
+    setApplying(true);
+    try {
+      const res = await fetch('/api/grading/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId, assignmentId: assignment.id }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setApplied(true);
+      } else {
+        alert('Could not save scores: ' + (data.error || 'Unknown error'));
+      }
+    } catch {
+      alert('Connection error. Please try again.');
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const toggleStudent = (id: string) => {
+    setExpandedStudents(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  if (!isOpen) return null;
+
+  const submissionCount = assignment.submissions?.length ?? 0;
+  const progressPct = jobStatus?.total_students
+    ? Math.round((jobStatus.items_processed / jobStatus.total_students) * 100)
+    : 0;
+
+  // Group results by student
+  const studentMap = new Map<string, GradingResult[]>();
+  results.forEach(r => {
+    const arr = studentMap.get(r.student_id) || [];
+    arr.push(r);
+    studentMap.set(r.student_id, arr);
+  });
+
+  return (
+    <Dialog open={isOpen} onOpenChange={open => !open && onClose()}>
+      <DialogContent className="sm:max-w-[820px] max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-lg">
+            <FaRobot className="text-indigo-600" />
+            AI Auto-Grading
+          </DialogTitle>
+          <DialogDescription className="text-gray-500">
+            {assignment.title}
+          </DialogDescription>
+        </DialogHeader>
+
+        {/* Step indicator — only steps 1-3 */}
+        {step <= 3 && (
+          <div className="flex items-center gap-2 py-2">
+            {[
+              { n: 1, label: 'Choose Questions' },
+              { n: 2, label: 'Scoring Guide' },
+              { n: 3, label: 'Review & Start' },
+            ].map(({ n, label }, idx) => (
+              <React.Fragment key={n}>
+                <div className="flex items-center gap-2">
+                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold
+                    ${step > n ? 'bg-indigo-600 text-white' : step === n ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-500'}`}>
+                    {step > n ? <FaCheck size={10} /> : n}
+                  </div>
+                  <span className={`text-xs font-medium ${step === n ? 'text-indigo-700' : 'text-gray-400'}`}>{label}</span>
+                </div>
+                {idx < 2 && <div className="flex-1 h-px bg-gray-200" />}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+
+        {/* Back button */}
+        {(step === 2 || step === 3) && (
+          <button
+            onClick={() => setStep(prev => (prev - 1) as Step)}
+            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 mb-2 w-fit"
+          >
+            <FaArrowLeft size={11} /> Back
+          </button>
+        )}
+
+        {/* ═══════════════════
+            STEP 1 — Pick questions
+        ═══════════════════ */}
+        {step === 1 && (
+          <div className="space-y-5 py-2">
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4">
+              <p className="text-sm text-indigo-700 leading-relaxed">
+                <strong>How AI grading works:</strong> The AI reads each student&apos;s essay answer,
+                then compares it to your course materials and scoring guide to suggest a grade and
+                feedback. You review and approve before scores are saved.
+              </p>
+            </div>
+
+            {essayQuestions.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <FaRobot size={32} className="inline mb-3 text-gray-300" />
+                <p className="font-medium text-gray-500">No essay questions found</p>
+                <p className="text-sm mt-1">AI grading only works for Essay and File Upload questions.</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-700">
+                    Select questions to grade ({selectedQuestionIds.length}/{essayQuestions.length} selected)
+                  </h3>
+                  <div className="flex gap-3 text-xs">
+                    <button onClick={selectAll} className="text-indigo-600 hover:underline">Select all</button>
+                    <button onClick={clearAll} className="text-gray-400 hover:underline">Clear</button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {essayQuestions.map((q: any, idx: number) => {
+                    const selected = selectedQuestionIds.includes(q.id);
+                    return (
+                      <button
+                        key={q.id}
+                        onClick={() => toggleQuestion(q.id)}
+                        className={`w-full text-left border rounded-xl p-4 transition-colors
+                          ${selected ? 'bg-indigo-50 border-indigo-300' : 'bg-white border-gray-200 hover:border-gray-300'}`}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 mt-0.5
+                            ${selected ? 'bg-indigo-600' : 'border-2 border-gray-300'}`}>
+                            {selected && <FaCheck size={10} className="text-white" />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-800">
+                              Question {idx + 1} — {q.points || 0} pts
+                            </p>
+                            <p className="text-sm text-gray-500 mt-0.5 line-clamp-2">
+                              {q.question_text}
+                            </p>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <Button
+                    onClick={proceedToRubric}
+                    disabled={selectedQuestionIds.length === 0}
+                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+                  >
+                    Next: Set Scoring Guide <FaArrowRight size={12} />
+                  </Button>
+                  <Button variant="outline" onClick={onClose}>Cancel</Button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ═══════════════════
+            STEP 2 — Rubric
+        ═══════════════════ */}
+        {step === 2 && (
+          <div className="space-y-5 py-2">
+            <p className="text-sm text-gray-500">
+              Tell the AI what matters most. Adjust the <strong>weight</strong> of each criterion
+              — they should add up to <strong>100%</strong>.
+            </p>
+
+            <div className="space-y-5">
+              {rubric.map((entry, qIdx) => {
+                const total = totalWeight(entry);
+                const isValid = total === 100;
+                return (
+                  <div key={entry.questionId} className="border rounded-xl overflow-hidden">
+                    {/* Question header */}
+                    <div className="bg-gray-50 border-b px-4 py-3">
+                      <p className="text-sm font-semibold text-gray-800">
+                        {entry.questionText.length > 80 ? entry.questionText.slice(0, 80) + '…' : entry.questionText}
+                      </p>
+                      <p className="text-xs text-gray-400 mt-0.5">Max score: {entry.maxScore} pts</p>
+                    </div>
+
+                    {/* Criteria rows */}
+                    <div className="p-4 space-y-2">
+                      {entry.criteria.map((c, cIdx) => (
+                        <div key={cIdx} className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={c.name}
+                            onChange={e => updateName(qIdx, cIdx, e.target.value)}
+                            className="flex-1 min-w-0 px-3 py-1.5 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                          />
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="number"
+                              value={c.weight}
+                              onChange={e => updateWeight(qIdx, cIdx, parseInt(e.target.value) || 0)}
+                              className="w-16 px-2 py-1.5 border border-gray-200 rounded-lg text-sm text-center focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                              min={0}
+                              max={100}
+                            />
+                            <span className="text-sm text-gray-400">%</span>
+                          </div>
+                          <button
+                            onClick={() => removeCriterion(qIdx, cIdx)}
+                            className="text-gray-300 hover:text-red-500 transition-colors text-lg leading-none px-1"
+                            title="Remove"
+                          >×</button>
+                        </div>
+                      ))}
+
+                      {/* Total + add */}
+                      <div className="flex items-center justify-between pt-1">
+                        <button
+                          onClick={() => addCriterion(qIdx)}
+                          className="text-xs text-indigo-600 hover:underline"
+                        >
+                          + Add criterion
+                        </button>
+                        <span className={`text-xs font-semibold ${isValid ? 'text-green-600' : 'text-red-500'}`}>
+                          Total: {total}% {isValid ? '✓' : '— must be 100%'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <Button
+                onClick={() => setStep(3)}
+                disabled={rubric.some(e => totalWeight(e) !== 100)}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                Next: Review &amp; Start <FaArrowRight size={12} />
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* ═══════════════════
+            STEP 3 — Confirm
+        ═══════════════════ */}
+        {step === 3 && (
+          <div className="space-y-5 py-2">
+            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
+              <h3 className="font-semibold text-indigo-800 mb-3">Ready to start AI grading</h3>
+              <div className="space-y-2 text-sm text-indigo-700">
+                <div className="flex items-center gap-2">
+                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
+                  <span><strong>{submissionCount}</strong> student submission{submissionCount !== 1 ? 's' : ''} will be graded</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
+                  <span><strong>{selectedQuestionIds.length}</strong> essay question{selectedQuestionIds.length !== 1 ? 's' : ''} selected</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
+                  <span>Scores will <strong>not</strong> be saved until you click &ldquo;Save Scores to Gradebook&rdquo;</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Rubric summary */}
+            <div>
+              <h4 className="text-sm font-semibold text-gray-600 mb-2">Your scoring guide:</h4>
+              <div className="space-y-3">
+                {rubric.map(entry => (
+                  <div key={entry.questionId} className="border rounded-xl p-3">
+                    <p className="text-xs font-semibold text-gray-600 mb-2">
+                      {entry.questionText.length > 60 ? entry.questionText.slice(0, 60) + '…' : entry.questionText}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {entry.criteria.map((c, i) => (
+                        <span key={i} className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full">
+                          {c.name}: {c.weight}%
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {gradingError && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-2">
+                <FaExclamationTriangle className="text-red-500 shrink-0 mt-0.5" />
+                <p className="text-sm text-red-700">{gradingError}</p>
+              </div>
+            )}
+
+            {grading && (
+              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <FaSpinner className="animate-spin text-indigo-600" />
+                  <span className="font-medium text-indigo-800">AI is grading essays…</span>
+                </div>
+                <div className="w-full bg-indigo-200 rounded-full h-2.5 mb-2">
+                  <div
+                    className="bg-indigo-600 h-2.5 rounded-full transition-all duration-500"
+                    style={{ width: `${progressPct || 5}%` }}
+                  />
+                </div>
+                <p className="text-xs text-indigo-600">This may take a few minutes for large classes.</p>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 pt-2">
+              <Button
+                onClick={runGrading}
+                disabled={grading}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                {grading ? <FaSpinner className="animate-spin" size={13} /> : <FaPlay size={13} />}
+                {grading ? 'Grading in progress…' : 'Start AI Grading'}
+              </Button>
+              {!grading && <Button variant="outline" onClick={onClose}>Cancel</Button>}
+            </div>
+          </div>
+        )}
+
+        {/* ═══════════════════
+            STEP 4 — Results
+        ═══════════════════ */}
+        {step === 4 && (
+          <div className="space-y-5 py-2">
+            {/* Status banner */}
+            {jobStatus?.status === 'completed' && (
+              <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <FaCheckCircle className="text-green-600" />
+                  <div>
+                    <p className="font-semibold text-green-800">Grading complete!</p>
+                    <p className="text-xs text-green-600 mt-0.5">Review the scores below before saving to the gradebook.</p>
+                  </div>
+                </div>
+                {!applied ? (
+                  <Button
+                    onClick={applyToGradebook}
+                    disabled={applying}
+                    className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white shrink-0 ml-4"
+                  >
+                    {applying ? <FaSpinner className="animate-spin" size={12} /> : <FaCheck size={12} />}
+                    {applying ? 'Saving…' : 'Save Scores to Gradebook'}
+                  </Button>
+                ) : (
+                  <span className="text-sm font-medium text-green-700 bg-green-100 px-3 py-1.5 rounded-lg ml-4">
+                    ✓ Scores saved!
+                  </span>
+                )}
+              </div>
+            )}
+
+            {jobStatus?.status === 'failed' && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-2">
+                <FaExclamationTriangle className="text-red-500" />
+                <p className="text-sm text-red-700">Grading failed. <button onClick={() => setStep(3)} className="underline">Try again</button></p>
+              </div>
+            )}
+
+            {/* Student result cards */}
+            {studentMap.size === 0 && (
+              <div className="text-center py-8 text-gray-400">
+                <FaSpinner className="animate-spin inline mb-2" size={20} />
+                <p>Loading results…</p>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {Array.from(studentMap.entries()).map(([studentId, studentResults]) => {
+                const isExpanded = expandedStudents.has(studentId);
+                const totalScore = studentResults.reduce((s, r) => s + (r.score ?? 0), 0);
+                const totalMax = studentResults.reduce((s, r) => s + (r.max_score || 0), 0);
+                const overallConf = studentResults.some(r => r.confidence === 'low')
+                  ? 'low'
+                  : studentResults.some(r => r.confidence === 'medium')
+                    ? 'medium'
+                    : 'high';
+                const conf = confidenceLabel(overallConf);
+
+                return (
+                  <div key={studentId} className="border rounded-xl overflow-hidden">
+                    {/* Card header — always visible */}
+                    <button
+                      onClick={() => toggleStudent(studentId)}
+                      className="w-full text-left px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-indigo-100 flex items-center justify-center shrink-0">
+                          <FaUser className="text-indigo-500" size={14} />
+                        </div>
+                        <div>
+                          <p className="font-semibold text-gray-800">Student {studentId}</p>
+                          <p className="text-xs text-gray-400">
+                            {studentResults.length} question{studentResults.length > 1 ? 's' : ''} graded
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3 shrink-0">
+                        {/* Score pill */}
+                        {totalMax > 0 && (
+                          <span className="text-sm font-bold text-gray-700">
+                            {totalScore}/{totalMax} pts
+                          </span>
+                        )}
+                        {/* Confidence */}
+                        <span className={`text-xs px-2 py-1 rounded-full border font-medium ${conf.bg} ${conf.color}`}>
+                          {conf.icon} {conf.text}
+                        </span>
+                        {isExpanded ? <FaChevronUp className="text-gray-400" size={12} /> : <FaChevronDown className="text-gray-400" size={12} />}
+                      </div>
+                    </button>
+
+                    {/* Expanded: per-question details */}
+                    {isExpanded && (
+                      <div className="border-t divide-y">
+                        {studentResults.map((r, idx) => {
+                          const qConf = confidenceLabel(r.confidence);
+                          return (
+                            <div key={idx} className="px-4 py-4">
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-xs font-semibold text-gray-500">Question {r.question_id}</span>
+                                <div className="flex items-center gap-2">
+                                  {r.qualitative_grade && (
+                                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${gradeColor(r.qualitative_grade)}`}>
+                                      {r.qualitative_grade}
+                                    </span>
+                                  )}
+                                  <span className="text-sm font-bold text-gray-700">
+                                    {r.score ?? '—'}/{r.max_score} pts
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Feedback */}
+                              <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-700 leading-relaxed">
+                                {r.feedback || 'No feedback provided.'}
+                              </div>
+
+                              {/* Citations */}
+                              {r.citations?.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {r.citations.map((c, i) => (
+                                    <span key={i} className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full">
+                                      📄 {c}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {/* Confidence note */}
+                              <div className={`mt-2 text-xs px-3 py-1.5 rounded-lg border ${qConf.bg} ${qConf.color}`}>
+                                {qConf.icon} {qConf.text}
+                                {r.language_detected && (
+                                  <span className="ml-2 text-gray-400">· {r.language_detected === 'id' ? 'Indonesian' : 'English'}</span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+};

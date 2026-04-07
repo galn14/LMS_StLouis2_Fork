@@ -12,6 +12,8 @@ interface AssignmentGridProps {
   onEditClick: (assignment: Assignment, e: React.MouseEvent) => void;
   onPublishToggle: (assignment: Assignment, e: React.MouseEvent) => void;
   onGradeClick?: (assignment: Assignment, e: React.MouseEvent) => void;
+  onPlagiarismClick?: (assignment: Assignment, e: React.MouseEvent) => void;
+  onAutoGradeClick?: (assignment: Assignment, e: React.MouseEvent) => void;
 }
 
 export const AssignmentGrid = ({
@@ -23,6 +25,8 @@ export const AssignmentGrid = ({
   onEditClick,
   onPublishToggle,
   onGradeClick,
+  onPlagiarismClick,
+  onAutoGradeClick,
 }: AssignmentGridProps) => {
   if (viewMode === 'all') {
     return (
@@ -37,6 +41,8 @@ export const AssignmentGrid = ({
             onEditClick={onEditClick}
             onPublishToggle={onPublishToggle}
             onGradeClick={onGradeClick}
+            onPlagiarismClick={onPlagiarismClick}
+            onAutoGradeClick={onAutoGradeClick}
           />
         ))}
       </div>
@@ -67,6 +73,8 @@ export const AssignmentGrid = ({
                 onEditClick={onEditClick}
                 onPublishToggle={onPublishToggle}
                 onGradeClick={onGradeClick}
+                onPlagiarismClick={onPlagiarismClick}
+                onAutoGradeClick={onAutoGradeClick}
               />
             ))}
           </div>

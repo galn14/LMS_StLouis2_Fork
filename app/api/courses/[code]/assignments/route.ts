@@ -32,6 +32,7 @@ export async function GET(
                     assignment_questions: {
                       orderBy: { order_number: 'asc' },
                       include: {
+                        enumeration: true,
                         assignment_question_options: {
                           orderBy: { order_number: 'asc' },
                         },
@@ -91,6 +92,7 @@ export async function GET(
               question_text: question.question_text,
               points: question.points,
               question_type_id: question.question_type_id,
+              question_type: question.enumeration.name,
               order_number: question.order_number,
               required: question.required,
               options: question.assignment_question_options.map(option => ({
