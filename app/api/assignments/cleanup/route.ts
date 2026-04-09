@@ -51,20 +51,10 @@ export async function POST(request: NextRequest) {
 
     // 4. Delete OpenAI Resources
     const cleanupResults = {
-        assistant: 'failed',
         vectorStore: 'failed',
         files: [] as { fileId: string; status: string }[],
         assignmentStatusUpdate: 'failed'
     };
-
-    try {
-        // Delete Assistant
-        await openai.beta.assistants.delete(acsAssignment.assistant_id);
-        cleanupResults.assistant = 'success';
-    } catch (e: any) {
-        if (e.status === 404) cleanupResults.assistant = 'not_found';
-        console.warn(`Failed to delete Assistant ${acsAssignment.assistant_id}:`, e.message);
-    }
 
     try {
         // Delete Vector Store

@@ -57,8 +57,31 @@ interface JobStatus {
   items_processed: number;
 }
 
-// Step: 1 = pick questions, 2 = set rubric, 3 = confirm+run, 4 = results
-type Step = 1 | 2 | 3 | 4;
+// Step: 1 = pick questions, 2 = choose materials, 3 = set rubric, 4 = confirm+run, 5 = results
+type Step = 1 | 2 | 3 | 4 | 5;
+
+interface FileCheckResult {
+  filename: string;
+  local_path: string;
+  local_exists: boolean;
+  openai_file_id: string | null;
+  openai_exists: boolean;
+  status: 'ok' | 'missing_openai' | 'missing_local' | 'new';
+}
+
+interface SessionResource {
+  id: number;
+  file_name: string;
+  file_title: string;
+  file_type: string;
+}
+
+interface SessionGroup {
+  session_id: number;
+  session_title: string;
+  session_number: number;
+  resources: SessionResource[];
+}
 
 function confidenceLabel(conf: string) {
   if (conf === 'high') return { text: 'AI is confident', color: 'text-green-700', bg: 'bg-green-50 border-green-200', icon: '✅' };
@@ -85,18 +108,33 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
     return type === 'ESSAY' || type === 'FILE_UPLOAD';
   });
 
-  // Step 2 state — rubric config
+  // Step 2 state — choose materials
+  const [sessions, setSessions] = useState<SessionGroup[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [selectedResourceIds, setSelectedResourceIds] = useState<number[]>([]);
+  const [expandedSessions, setExpandedSessions] = useState<Set<number>>(new Set());
+
+  // Step 3 state — rubric config
   const [rubric, setRubric] = useState<RubricEntry[]>([]);
 
-  // Step 3/4 state — grading
+  // Step 4/5 state — grading
   const [grading, setGrading] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [results, setResults] = useState<GradingResult[]>([]);
   const [gradingError, setGradingError] = useState<string | null>(null);
 
-  // Step 4 — expanded student cards
+  // Step 5 — expanded student cards
   const [expandedStudents, setExpandedStudents] = useState<Set<string>>(new Set());
+
+  // Preflight file check state
+  const [preflight, setPreflight] = useState<{
+    checked: boolean;
+    checking: boolean;
+    files: FileCheckResult[];
+    can_proceed: boolean;
+    confirmed: boolean;   // user has seen warnings and clicked confirm
+  }>({ checked: false, checking: false, files: [], can_proceed: true, confirmed: false });
 
   // Apply to gradebook
   const [applying, setApplying] = useState(false);
@@ -107,6 +145,10 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
     if (isOpen && assignment) {
       setStep(1);
       setSelectedQuestionIds([]);
+      setSessions([]);
+      setSelectedResourceIds([]);
+      setExpandedSessions(new Set());
+      setLoadingSessions(false);
       setRubric([]);
       setJobId(null);
       setJobStatus(null);
@@ -114,6 +156,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
       setGradingError(null);
       setApplied(false);
       setExpandedStudents(new Set());
+      setPreflight({ checked: false, checking: false, files: [], can_proceed: true, confirmed: false });
     }
   }, [isOpen, assignment?.id]);
 
@@ -129,7 +172,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
           if (data.studentGradeFeedback?.length) setResults(data.studentGradeFeedback);
           if (data.data.status === 'completed' || data.data.status === 'failed') {
             setGrading(false);
-            setStep(4);
+            setStep(5);
           }
         }
       } catch { /* keep polling */ }
@@ -147,7 +190,57 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
   const selectAll = () => setSelectedQuestionIds(essayQuestions.map((q: any) => q.id));
   const clearAll = () => setSelectedQuestionIds([]);
 
-  // ── Step 1 → 2: build rubric entries for selected questions ──
+  // ── Step 1 → 2: move to material selection ──
+  const proceedToMaterials = async () => {
+    setStep(2);
+    if (sessions.length > 0) return; // already loaded
+    setLoadingSessions(true);
+    try {
+      // Resolve numeric courseId
+      let courseId: string | number = courseCode;
+      try {
+        const courseRes = await fetch(`/api/courses/${courseCode}`);
+        const courseData = await courseRes.json();
+        courseId = courseData?.data?.id || courseCode;
+      } catch { /* use courseCode fallback */ }
+
+      const res = await fetch(`/api/assignments/course-materials?courseId=${courseId}`);
+      const data = await res.json();
+      if (data.success) {
+        setSessions(data.data);
+        // Auto-expand all sessions
+        setExpandedSessions(new Set(data.data.map((s: SessionGroup) => s.session_id)));
+      }
+    } catch {
+      // Will show empty state
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  // ── Step 2: toggle resource selection ──
+  const toggleResource = (id: number) => {
+    setSelectedResourceIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const toggleSession = (sessionId: number) => {
+    setExpandedSessions(prev => {
+      const next = new Set(prev);
+      next.has(sessionId) ? next.delete(sessionId) : next.add(sessionId);
+      return next;
+    });
+  };
+
+  const selectAllResources = () => {
+    const allIds = sessions.flatMap(s => s.resources.map(r => r.id));
+    setSelectedResourceIds(allIds);
+  };
+
+  const clearAllResources = () => setSelectedResourceIds([]);
+
+  // ── Step 2 → 3: build rubric entries for selected questions ──
   const proceedToRubric = () => {
     const entries: RubricEntry[] = essayQuestions
       .filter((q: any) => selectedQuestionIds.includes(q.id))
@@ -163,7 +256,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
         ],
       }));
     setRubric(entries);
-    setStep(2);
+    setStep(3);
   };
 
   // ── Rubric helpers ──
@@ -201,12 +294,68 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
 
   const totalWeight = (entry: RubricEntry) => entry.criteria.reduce((s, c) => s + c.weight, 0);
 
-  // ── Step 3: run grading ──
+  // ── Step 4: preflight — check file status before grading ──
+  const checkFiles = async () => {
+    setPreflight(prev => ({ ...prev, checking: true }));
+    try {
+      const res = await fetch('/api/assignments/check-files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resourceIds: selectedResourceIds }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        const { files, can_proceed } = data.data;
+        const needsWarning = files.some((f: FileCheckResult) =>
+          f.status === 'missing_openai' || f.status === 'missing_local'
+        );
+        setPreflight({
+          checked: true,
+          checking: false,
+          files,
+          can_proceed,
+          // Auto-confirm if nothing needs attention
+          confirmed: !needsWarning,
+        });
+        return { files, can_proceed, needsWarning };
+      }
+    } catch {
+      // If preflight fails, allow grading to proceed — create will catch real errors
+    }
+    setPreflight(prev => ({ ...prev, checking: false, checked: true, confirmed: true }));
+    return { files: [], can_proceed: true, needsWarning: false };
+  };
+
+  // ── Step 4: run grading ──
   const runGrading = async () => {
-    setGrading(true);
     setGradingError(null);
     setResults([]);
     setJobStatus(null);
+
+    // Resolve courseId
+    let courseId: string | number = courseCode;
+    try {
+      const courseRes = await fetch(`/api/courses/${courseCode}`);
+      const courseData = await courseRes.json();
+      courseId = courseData?.data?.id || courseCode;
+    } catch { /* use courseCode fallback */ }
+
+    // Run preflight if not yet done
+    if (!preflight.checked) {
+      const result = await checkFiles();
+      if (result.needsWarning) {
+        return;
+      }
+      if (!result.can_proceed) {
+        setGradingError('No course materials are available. Upload course files before grading.');
+        return;
+      }
+    }
+
+    // If preflight surfaced warnings, require explicit user confirmation
+    if (preflight.checked && !preflight.confirmed) return;
+
+    setGrading(true);
 
     // Build API rubric format
     const apiRubric = rubric.map(e => ({
@@ -218,21 +367,25 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
 
     // First, setup ACS (or re-run)
     try {
-      const courseRes = await fetch(`/api/courses/${courseCode}`);
-      const courseData = await courseRes.json();
-      // /api/courses/[code] returns { success: true, data: { id: number, ... } }
-      const courseId = courseData?.data?.id || courseCode;
-
       const setupRes = await fetch('/api/assignments/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignmentId: assignment.id, courseId, rubric: apiRubric }),
+        body: JSON.stringify({ assignmentId: assignment.id, courseId, rubric: apiRubric, resourceIds: selectedResourceIds }),
       });
       const setupData = await setupRes.json();
       if (!setupData.success) {
         setGrading(false);
-        setGradingError(setupData.error || 'Could not set up AI grading. Please try again.');
+        setGradingError(
+          setupData.details
+            ? `${setupData.error}: ${setupData.details}`
+            : setupData.error || 'Could not set up AI grading. Please try again.'
+        );
         return;
+      }
+      // Partial indexing warning — some files failed but grading can still proceed
+      if (setupData.data?.warning) {
+        setGradingError(setupData.data.warning);
+        // Don't return — continue to grading with the indexed files
       }
     } catch {
       setGrading(false);
@@ -320,13 +473,14 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
           </DialogDescription>
         </DialogHeader>
 
-        {/* Step indicator — only steps 1-3 */}
-        {step <= 3 && (
+        {/* Step indicator — only steps 1-4 */}
+        {step <= 4 && (
           <div className="flex items-center gap-2 py-2">
             {[
-              { n: 1, label: 'Choose Questions' },
-              { n: 2, label: 'Scoring Guide' },
-              { n: 3, label: 'Review & Start' },
+              { n: 1, label: 'Questions' },
+              { n: 2, label: 'Materials' },
+              { n: 3, label: 'Scoring' },
+              { n: 4, label: 'Review' },
             ].map(({ n, label }, idx) => (
               <React.Fragment key={n}>
                 <div className="flex items-center gap-2">
@@ -336,14 +490,14 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
                   </div>
                   <span className={`text-xs font-medium ${step === n ? 'text-indigo-700' : 'text-gray-400'}`}>{label}</span>
                 </div>
-                {idx < 2 && <div className="flex-1 h-px bg-gray-200" />}
+                {idx < 3 && <div className="flex-1 h-px bg-gray-200" />}
               </React.Fragment>
             ))}
           </div>
         )}
 
         {/* Back button */}
-        {(step === 2 || step === 3) && (
+        {(step === 2 || step === 3 || step === 4) && (
           <button
             onClick={() => setStep(prev => (prev - 1) as Step)}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 mb-2 w-fit"
@@ -414,8 +568,112 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
 
                 <div className="flex items-center gap-3 pt-2">
                   <Button
-                    onClick={proceedToRubric}
+                    onClick={proceedToMaterials}
                     disabled={selectedQuestionIds.length === 0}
+                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
+                  >
+                    Next: Choose Materials <FaArrowRight size={12} />
+                  </Button>
+                  <Button variant="outline" onClick={onClose}>Cancel</Button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ═══════════════════
+            STEP 2 — Choose Materials
+        ═══════════════════ */}
+        {step === 2 && (
+          <div className="space-y-5 py-2">
+            <p className="text-sm text-gray-500">
+              Select the course materials the AI should use as <strong>grading reference</strong>.
+              Only selected files will be used to verify student answers.
+            </p>
+
+            {loadingSessions ? (
+              <div className="text-center py-8">
+                <FaSpinner className="animate-spin inline mb-2 text-gray-400" size={20} />
+                <p className="text-sm text-gray-400">Loading course materials…</p>
+              </div>
+            ) : sessions.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <FaExclamationTriangle size={28} className="inline mb-3 text-gray-300" />
+                <p className="font-medium text-gray-500">No course materials found</p>
+                <p className="text-sm mt-1">Upload files to your course sessions before using AI grading.</p>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-700">
+                    {selectedResourceIds.length} file{selectedResourceIds.length !== 1 ? 's' : ''} selected
+                  </h3>
+                  <div className="flex gap-3 text-xs">
+                    <button onClick={selectAllResources} className="text-indigo-600 hover:underline">Select all</button>
+                    <button onClick={clearAllResources} className="text-gray-400 hover:underline">Clear</button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {sessions.map(session => {
+                    const isExpanded = expandedSessions.has(session.session_id);
+                    const sessionSelectedCount = session.resources.filter(r => selectedResourceIds.includes(r.id)).length;
+                    return (
+                      <div key={session.session_id} className="border rounded-xl overflow-hidden">
+                        <button
+                          onClick={() => toggleSession(session.session_id)}
+                          className="w-full text-left px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+                        >
+                          <div className="flex items-center gap-2">
+                            {isExpanded ? <FaChevronUp size={11} className="text-gray-400" /> : <FaChevronDown size={11} className="text-gray-400" />}
+                            <div>
+                              <p className="text-sm font-semibold text-gray-800">
+                                Session {session.session_number}: {session.session_title}
+                              </p>
+                              <p className="text-xs text-gray-400">
+                                {session.resources.length} file{session.resources.length !== 1 ? 's' : ''}
+                                {sessionSelectedCount > 0 && (
+                                  <span className="text-indigo-600 ml-1">· {sessionSelectedCount} selected</span>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+
+                        {isExpanded && (
+                          <div className="border-t px-4 py-2 space-y-1 bg-gray-50/50">
+                            {session.resources.map(resource => {
+                              const selected = selectedResourceIds.includes(resource.id);
+                              return (
+                                <button
+                                  key={resource.id}
+                                  onClick={() => toggleResource(resource.id)}
+                                  className={`w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg transition-colors
+                                    ${selected ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-white border border-transparent'}`}
+                                >
+                                  <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0
+                                    ${selected ? 'bg-indigo-600' : 'border-2 border-gray-300'}`}>
+                                    {selected && <FaCheck size={10} className="text-white" />}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm text-gray-800 truncate">{resource.file_title}</p>
+                                    <p className="text-xs text-gray-400 truncate">{resource.file_name}</p>
+                                  </div>
+                                  <span className="text-xs text-gray-400 uppercase shrink-0">{resource.file_type}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center gap-3 pt-2">
+                  <Button
+                    onClick={proceedToRubric}
+                    disabled={selectedResourceIds.length === 0}
                     className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
                   >
                     Next: Set Scoring Guide <FaArrowRight size={12} />
@@ -428,9 +686,9 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
         )}
 
         {/* ═══════════════════
-            STEP 2 — Rubric
+            STEP 3 — Rubric
         ═══════════════════ */}
-        {step === 2 && (
+        {step === 3 && (
           <div className="space-y-5 py-2">
             <p className="text-sm text-gray-500">
               Tell the AI what matters most. Adjust the <strong>weight</strong> of each criterion
@@ -500,7 +758,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
 
             <div className="flex items-center gap-3 pt-2">
               <Button
-                onClick={() => setStep(3)}
+                onClick={() => setStep(4)}
                 disabled={rubric.some(e => totalWeight(e) !== 100)}
                 className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
               >
@@ -511,9 +769,9 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
         )}
 
         {/* ═══════════════════
-            STEP 3 — Confirm
+            STEP 4 — Confirm
         ═══════════════════ */}
-        {step === 3 && (
+        {step === 4 && (
           <div className="space-y-5 py-2">
             <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
               <h3 className="font-semibold text-indigo-800 mb-3">Ready to start AI grading</h3>
@@ -525,6 +783,10 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
                 <div className="flex items-center gap-2">
                   <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
                   <span><strong>{selectedQuestionIds.length}</strong> essay question{selectedQuestionIds.length !== 1 ? 's' : ''} selected</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
+                  <span><strong>{selectedResourceIds.length}</strong> course material{selectedResourceIds.length !== 1 ? 's' : ''} as reference</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
@@ -561,6 +823,67 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
               </div>
             )}
 
+            {/* ── Preflight checking spinner ── */}
+            {preflight.checking && (
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-center gap-2">
+                <FaSpinner className="animate-spin text-gray-500" size={13} />
+                <span className="text-sm text-gray-600">Checking course material files…</span>
+              </div>
+            )}
+
+            {/* ── Preflight warning panel ── */}
+            {preflight.checked && !preflight.confirmed && !preflight.checking && (
+              <div className="border border-yellow-300 bg-yellow-50 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-yellow-200 flex items-center gap-2">
+                  <FaExclamationTriangle className="text-yellow-600 shrink-0" size={14} />
+                  <span className="text-sm font-semibold text-yellow-800">Course material issues detected</span>
+                </div>
+                <div className="p-4 space-y-2">
+                  {preflight.files.map((f, i) => {
+                    if (f.status === 'ok' || f.status === 'new') return null;
+                    return (
+                      <div key={i} className={`rounded-lg px-3 py-2 text-xs flex items-start gap-2
+                        ${f.status === 'missing_local'
+                          ? 'bg-red-50 border border-red-200'
+                          : 'bg-yellow-100 border border-yellow-200'}`}>
+                        <span className="mt-0.5 shrink-0">
+                          {f.status === 'missing_local' ? '🚫' : '⚠️'}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="font-medium text-gray-800 truncate">{f.filename}</p>
+                          <p className="text-gray-500 break-all">{f.local_path}</p>
+                          <p className={f.status === 'missing_local' ? 'text-red-600 mt-0.5' : 'text-yellow-700 mt-0.5'}>
+                            {f.status === 'missing_local'
+                              ? 'File is missing from disk — cannot be re-uploaded. Remove or replace it in course materials.'
+                              : 'Previously uploaded to OpenAI but no longer found there — will be re-uploaded from disk.'}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {!preflight.can_proceed ? (
+                    <p className="text-sm text-red-700 font-medium pt-1">
+                      No usable course materials found. Fix the issues above before grading.
+                    </p>
+                  ) : (
+                    <div className="flex items-center justify-between pt-2">
+                      <p className="text-xs text-yellow-700">
+                        {preflight.files.filter(f => f.status === 'ok' || (f.status === 'new' && f.local_exists)).length} file(s) will be used for grading.
+                        Missing files will be re-uploaded automatically.
+                      </p>
+                      <Button
+                        onClick={() => setPreflight(prev => ({ ...prev, confirmed: true }))}
+                        className="text-xs bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1.5 h-auto ml-3 shrink-0"
+                      >
+                        Confirm &amp; Continue
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {grading && (
               <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
                 <div className="flex items-center gap-2 mb-3">
@@ -580,11 +903,11 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
             <div className="flex items-center gap-3 pt-2">
               <Button
                 onClick={runGrading}
-                disabled={grading}
+                disabled={grading || preflight.checking || (preflight.checked && !preflight.confirmed && !preflight.can_proceed)}
                 className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
               >
-                {grading ? <FaSpinner className="animate-spin" size={13} /> : <FaPlay size={13} />}
-                {grading ? 'Grading in progress…' : 'Start AI Grading'}
+                {grading ? <FaSpinner className="animate-spin" size={13} /> : preflight.checking ? <FaSpinner className="animate-spin" size={13} /> : <FaPlay size={13} />}
+                {grading ? 'Grading in progress…' : preflight.checking ? 'Checking files…' : 'Start AI Grading'}
               </Button>
               {!grading && <Button variant="outline" onClick={onClose}>Cancel</Button>}
             </div>
@@ -592,9 +915,9 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
         )}
 
         {/* ═══════════════════
-            STEP 4 — Results
+            STEP 5 — Results
         ═══════════════════ */}
-        {step === 4 && (
+        {step === 5 && (
           <div className="space-y-5 py-2">
             {/* Status banner */}
             {jobStatus?.status === 'completed' && (
@@ -626,7 +949,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
             {jobStatus?.status === 'failed' && (
               <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-2">
                 <FaExclamationTriangle className="text-red-500" />
-                <p className="text-sm text-red-700">Grading failed. <button onClick={() => setStep(3)} className="underline">Try again</button></p>
+                <p className="text-sm text-red-700">Grading failed. <button onClick={() => setStep(4)} className="underline">Try again</button></p>
               </div>
             )}
 

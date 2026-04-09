@@ -2,9 +2,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
-// import { openai } from '@/lib/openai';
 import {
   getAcsAssignmentByAssignmentId,
+  getUploadedFilesByResourceIds,
   insertUploadedFiles,
   upsertAcsAssignment,
 } from '@/lib/db2/acs-repo';
@@ -20,7 +20,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'Unauthorized' }, { status: 401 });
     }
 
-    // 2. Validate Instructor Role (using existing prisma check)
+    // 2. Validate Instructor Role
     const userDetails = await prisma.app_user.findUnique({
       where: { id: parseInt(session.user.id) },
       include: { app_user_role: { include: { enumeration: true } } },
@@ -36,126 +36,138 @@ export async function POST(request: NextRequest) {
 
     // 3. Parse Body
     const body = await request.json();
-    const { assignmentId, courseId, rubric } = body;
+    const { assignmentId, courseId, rubric, resourceIds } = body;
 
     if (!assignmentId || !courseId || !rubric) {
       return NextResponse.json({ success: false, error: 'Missing required fields' }, { status: 400 });
     }
 
-    // 3.1 Check if assignment already exists
-    const existingAssignment = await getAcsAssignmentByAssignmentId(assignmentId.toString());
-
-    const isRerun = Boolean(existingAssignment);
-
-    // 3.5 Fetch existing course materials (resources)
-    const courseResources = await prisma.resources.findMany({
-      where: {
-        sessions: {
-          class_courses: {
-            courses: {
-              id: parseInt(courseId.toString()),
-            },
-          },
-        },
-      },
-      select: {
-        id: true,
-        file_url: true,
-        file_name: true,
-        file_type: true,
-      },
-    });
-
-    const supportedExtensions = ['.pdf', '.docx', '.doc', '.txt', '.md', '.pptx'];
-    const uploadedFileIds: string[] = [];
-    const uploadedFileRecords: { file_id: string; filename: string; type_file: string }[] = [];
-    const openai = new OpenAI();
-
-    // Cleanup stale OpenAI resources when re-running an archived assignment id
-    if (isRerun && existingAssignment) {
-      if (existingAssignment.assistant_id) {
-        try {
-          await openai.beta.assistants.delete(existingAssignment.assistant_id);
-        } catch (cleanupError) {
-          console.warn('Failed to delete previous assistant during rerun:', cleanupError);
-        }
-      }
-
-      if (existingAssignment.vector_store_id) {
-        try {
-          await openai.vectorStores.delete(existingAssignment.vector_store_id);
-        } catch (cleanupError) {
-          console.warn('Failed to delete previous vector store during rerun:', cleanupError);
-        }
-      }
+    // resourceIds is required — user must explicitly choose which materials to use
+    const selectedResourceIds: number[] = Array.isArray(resourceIds) ? resourceIds : [];
+    if (selectedResourceIds.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No materials selected', details: 'Select at least one course material file to use as grading reference.' },
+        { status: 422 }
+      );
     }
 
+    const existingAssignment = await getAcsAssignmentByAssignmentId(assignmentId.toString());
+    const isRerun = Boolean(existingAssignment);
+
+    // 4. Fetch only the selected resources from LMS DB
+    const courseResources = await prisma.resources.findMany({
+      where: { id: { in: selectedResourceIds } },
+      select: { id: true, file_url: true, file_name: true, file_type: true },
+    });
+
+    if (courseResources.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No valid resources found for the given IDs' },
+        { status: 422 }
+      );
+    }
+
+    const openai = new OpenAI();
+
+    // 5. Cross-assignment dedup: look up existing OpenAI files by resource_id
+    //    This avoids re-uploading the same course material for different assignments.
+    const existingUploads = await getUploadedFilesByResourceIds(selectedResourceIds);
+    const existingByResourceId = new Map(existingUploads.map(f => [f.resource_id!, f.file_id]));
+
+    const allFileIds: string[] = [];
+    const newFileRecords: { resource_id: number; file_id: string; filename: string; type_file: string }[] = [];
+
     for (const resource of courseResources) {
-      try {
-        const ext = path.extname(resource.file_name).toLowerCase();
-        if (!supportedExtensions.includes(ext)) continue;
-
-        const localFilePath = path.join(process.cwd(), 'public', resource.file_url);
-        if (!fs.existsSync(localFilePath)) {
-            console.warn(`File not found: ${localFilePath}`);
-            continue;
+      // Check if this resource was already uploaded to OpenAI (by any assignment)
+      if (existingByResourceId.has(resource.id)) {
+        const existingId = existingByResourceId.get(resource.id)!;
+        try {
+          await openai.files.retrieve(existingId);
+          allFileIds.push(existingId);
+          continue; // still valid on OpenAI, reuse
+        } catch {
+          console.warn(`OpenAI file ${existingId} for resource ${resource.id} no longer exists, re-uploading`);
         }
+      }
 
-        const fileStream = fs.createReadStream(localFilePath);
+      // Upload file
+      const localFilePath = path.join(process.cwd(), 'public', resource.file_url);
+      if (!fs.existsSync(localFilePath)) {
+        console.warn(`File not found on disk: ${localFilePath}`);
+        continue;
+      }
+
+      try {
         const openaiFile = await openai.files.create({
-          file: fileStream,
+          file: fs.createReadStream(localFilePath),
           purpose: 'assistants',
         });
-
-        uploadedFileIds.push(openaiFile.id);
-        const fileType = resource.file_type ?? ext.replace('.', ' ') ?? 'unknown';
-
-        uploadedFileRecords.push({
-            file_id: openaiFile.id,
-            filename: resource.file_name,
-            type_file: fileType
+        allFileIds.push(openaiFile.id);
+        const ext = path.extname(resource.file_name).toLowerCase();
+        newFileRecords.push({
+          resource_id: resource.id,
+          file_id: openaiFile.id,
+          filename: resource.file_name,
+          type_file: resource.file_type ?? ext.replace('.', '') ?? 'unknown',
         });
-
       } catch (err) {
         console.error(`Failed to upload resource ${resource.id} to OpenAI:`, err);
       }
     }
 
-    // 4. Create OpenAI Vector Store
+    // 6. Guard: abort if no files are available
+    if (allFileIds.length === 0) {
+      return NextResponse.json(
+        { success: false, error: 'No course materials available', details: 'None of the selected files could be loaded or uploaded.' },
+        { status: 422 }
+      );
+    }
 
+    // 7. Delete old Vector Store if rerun
+    if (isRerun && existingAssignment?.vector_store_id) {
+      try {
+        await openai.vectorStores.delete(existingAssignment.vector_store_id);
+      } catch (e) {
+        console.warn('Failed to delete old vector store during rerun:', e);
+      }
+    }
+
+    // 8. Create new Vector Store
     const vectorStore = await openai.vectorStores.create({
       name: `VS_${courseId}_${assignmentId}`,
     });
 
-    // 4.5 Attach uploaded files to Vector Store
-    for (const fileId of uploadedFileIds) {
-        try {
-            await openai.vectorStores.files.create(vectorStore.id, {
-                file_id: fileId
-            });
-        } catch (e) {
-            console.error(`Failed to attach file ${fileId} to VS:`, e);
-        }
+    // 9. Attach files and wait for indexing
+    let filesIndexed = 0;
+    let filesFailed = 0;
+    try {
+      const batch = await openai.vectorStores.fileBatches.createAndPoll(vectorStore.id, {
+        file_ids: allFileIds,
+      });
+      filesIndexed = batch.file_counts.completed;
+      filesFailed = batch.file_counts.failed;
+    } catch (e) {
+      console.error('Failed to attach files to vector store:', e);
+      await openai.vectorStores.delete(vectorStore.id);
+      return NextResponse.json(
+        { success: false, error: 'Failed to index course materials', details: String(e) },
+        { status: 502 }
+      );
     }
 
-    // 5. Read System Prompt
-    const promptPath = path.join(process.cwd(), 'prompts', 'grading-system-prompt.txt');
-    const systemPrompt = fs.readFileSync(promptPath, 'utf-8');
-
-    // 6. Create OpenAI Assistant
-    const assistant = await openai.beta.assistants.create({
-      name: `ACS_Assistant_${assignmentId}`,
-      instructions: systemPrompt,
-      model: "gpt-4o-mini",
-      tools: [{ type: "file_search" }],
-      tool_resources: {
-        file_search: {
-          vector_store_ids: [vectorStore.id],
+    if (filesIndexed === 0) {
+      await openai.vectorStores.delete(vectorStore.id);
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Course materials could not be indexed',
+          details: `${filesFailed} file(s) failed to be processed by OpenAI.`,
         },
-      },
-    });
+        { status: 502 }
+      );
+    }
 
-    // 7. Save to DB2
+    // 10. Save to DB
     const rerunFields = isRerun
       ? { rerun_grading: true, rerun_grading_at: new Date().toISOString(), archived_at: null }
       : { rerun_grading: false, rerun_grading_at: null, archived_at: null };
@@ -165,7 +177,6 @@ export async function POST(request: NextRequest) {
       data = await upsertAcsAssignment({
         assignment_id: assignmentId.toString(),
         course_id: courseId.toString(),
-        assistant_id: assistant.id,
         vector_store_id: vectorStore.id,
         rubric,
         created_by: session.user.id,
@@ -173,47 +184,50 @@ export async function POST(request: NextRequest) {
         ...rerunFields,
       });
     } catch (error: any) {
-        // Cleanup OpenAI resources if DB save fails
-        await openai.beta.assistants.delete(assistant.id);
-        await openai.vectorStores.delete(vectorStore.id);
-        
-        console.error('DB2 error:', error);
-        return NextResponse.json({ success: false, error: 'Database error', details: error?.message ?? String(error) }, { status: 500 });
+      await openai.vectorStores.delete(vectorStore.id);
+      console.error('DB2 error:', error);
+      return NextResponse.json(
+        { success: false, error: 'Database error', details: error?.message ?? String(error) },
+        { status: 500 }
+      );
     }
 
-    // 7.5 Save uploaded file records to DB2
-    if (uploadedFileRecords.length > 0) {
-        const fileInserts = uploadedFileRecords.map(rec => ({
+    // 11. Save newly uploaded file records (with resource_id for future dedup)
+    if (newFileRecords.length > 0) {
+      try {
+        await insertUploadedFiles(
+          newFileRecords.map(rec => ({
             assignment_id: assignmentId.toString(),
+            resource_id: rec.resource_id,
             file_id: rec.file_id,
             filename: rec.filename,
             type_file: rec.type_file,
-        }));
-
-        try {
-          await insertUploadedFiles(fileInserts);
-        } catch (fileError) {
-            console.error('Failed to record uploaded files in DB:', fileError);
-        }
+          }))
+        );
+      } catch (fileError) {
+        console.error('Failed to record uploaded files in DB:', fileError);
+      }
     }
 
     return NextResponse.json({
       success: true,
       data: {
         acs_assignment_id: data.id,
-        assistant_id: assistant.id,
         vector_store_id: vectorStore.id,
+        files_reused: allFileIds.length - newFileRecords.length,
+        files_uploaded: newFileRecords.length,
+        files_indexed: filesIndexed,
+        files_failed: filesFailed,
+        ...(filesFailed > 0 && {
+          warning: `${filesFailed} file(s) failed to index and will not be used during grading.`,
+        }),
       },
     });
 
   } catch (error: any) {
     console.error('Error creating assignment setup:', error);
     return NextResponse.json(
-      {
-        success: false,
-        error: 'Internal server error',
-        message: error.message,
-      },
+      { success: false, error: 'Internal server error', message: error.message },
       { status: 500 }
     );
   }

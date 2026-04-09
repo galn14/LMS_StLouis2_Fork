@@ -2,7 +2,6 @@ CREATE TABLE IF NOT EXISTS acs_assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   assignment_id VARCHAR NOT NULL UNIQUE,
   course_id VARCHAR NOT NULL,
-  assistant_id VARCHAR NOT NULL,
   vector_store_id VARCHAR NOT NULL,
   rubric JSONB NOT NULL,
   created_by VARCHAR NOT NULL,
@@ -17,12 +16,16 @@ CREATE TABLE IF NOT EXISTS acs_assignments (
 CREATE TABLE IF NOT EXISTS acs_uploaded_files (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   assignment_id VARCHAR NOT NULL,
+  resource_id INTEGER,
   file_id VARCHAR NOT NULL,
   filename VARCHAR NOT NULL,
   type_file VARCHAR,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (assignment_id, file_id)
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_acs_uploaded_files_resource_id
+  ON acs_uploaded_files(resource_id) WHERE resource_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS acs_grading_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -8,6 +8,7 @@ import {
   updateGradingJobStatus,
 } from '@/lib/db2/acs-repo';
 import { gradeStudentAnswer } from '@/lib/grading-service';
+import { openai } from '@/lib/openai';
 
 export async function POST(request: NextRequest) {
   try {
@@ -50,7 +51,8 @@ export async function POST(request: NextRequest) {
                 for (const ans of sub.assignment_answers) {
                      let questionRubric: any = null;
                      if (Array.isArray(rawRubric)) {
-                        questionRubric = rawRubric.find((r: any) => r.questionId === ans.question_id) || rawRubric[0];
+                        // Use == (loose) to handle number/string mismatch from JSONB vs DB
+                        questionRubric = rawRubric.find((r: any) => r.questionId == ans.question_id) ?? null;
                      } else if (rawRubric) {
                         questionRubric = rawRubric;
                      }
@@ -63,7 +65,7 @@ export async function POST(request: NextRequest) {
                          questionId: ans.question_id.toString(),
                          studentAnswer: ans.answer_text,
                          rubric: questionRubric,
-                         assistantId: acsData.assistant_id,
+                         vectorStoreId: acsData.vector_store_id,
                          jobId: jobData.id
                      });
                 }
@@ -73,6 +75,14 @@ export async function POST(request: NextRequest) {
         } catch (err) {
              console.error('Background grading failed:', err);
              await updateGradingJobStatus(jobData.id, 'failed');
+        } finally {
+            // Auto-delete VS after grading — it's only needed during grading.
+            // Cleanup/archive route handles file deletion separately.
+            try {
+                await openai.vectorStores.delete(acsData.vector_store_id);
+            } catch (e: any) {
+                if (e.status !== 404) console.warn('Failed to auto-delete VS after grading:', e.message);
+            }
         }
     })();
 

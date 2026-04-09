@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { assignmentId, studentId, questionId, studentAnswer } = body;
 
-    // 1. Get Assistant & Rubric Config
+    // 1. Get ACS Config & Rubric
     const acsData = await getAcsAssignmentByAssignmentId(assignmentId);
 
     if (!acsData) {
@@ -27,7 +27,8 @@ export async function POST(request: NextRequest) {
     let questionRubric: any = null;
 
     if (Array.isArray(rawRubric)) {
-      questionRubric = rawRubric.find((r: any) => r.questionId === questionId) || rawRubric[0];
+      // Use == (loose) to handle number/string mismatch from JSONB vs DB
+      questionRubric = rawRubric.find((r: any) => r.questionId == questionId) ?? null;
     } else if (rawRubric) {
       questionRubric = rawRubric;
     }
@@ -43,7 +44,7 @@ export async function POST(request: NextRequest) {
       questionId,
       studentAnswer,
       rubric: questionRubric,
-      assistantId: acsData.assistant_id,
+      vectorStoreId: acsData.vector_store_id,
     });
 
     return NextResponse.json({ success: true, data: result });

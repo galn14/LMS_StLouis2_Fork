@@ -24,7 +24,6 @@ export interface ACSAssignment {
   id: string;
   assignment_id: string;
   course_id: string;
-  assistant_id: string;
   vector_store_id: string;
   rubric: Rubric[];
   created_by: string;

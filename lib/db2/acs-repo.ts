@@ -4,7 +4,6 @@ export interface AcsAssignmentRecord {
   id: string;
   assignment_id: string;
   course_id: string;
-  assistant_id: string;
   vector_store_id: string;
   rubric: unknown;
   created_by: string;
@@ -19,6 +18,7 @@ export interface AcsAssignmentRecord {
 export interface AcsUploadedFileRecord {
   id: string;
   assignment_id: string;
+  resource_id: number | null;
   file_id: string;
   filename: string;
   type_file: string | null;
@@ -38,7 +38,6 @@ export interface AcsGradingJobRecord {
 interface UpsertAcsAssignmentInput {
   assignment_id: string;
   course_id: string;
-  assistant_id: string;
   vector_store_id: string;
   rubric: unknown;
   created_by: string;
@@ -50,6 +49,7 @@ interface UpsertAcsAssignmentInput {
 
 interface UploadedFileInsert {
   assignment_id: string;
+  resource_id?: number | null;
   file_id: string;
   filename: string;
   type_file?: string | null;
@@ -122,7 +122,6 @@ export async function upsertAcsAssignment(input: UpsertAcsAssignmentInput) {
       INSERT INTO acs_assignments (
         assignment_id,
         course_id,
-        assistant_id,
         vector_store_id,
         rubric,
         created_by,
@@ -131,11 +130,10 @@ export async function upsertAcsAssignment(input: UpsertAcsAssignmentInput) {
         rerun_grading_at,
         archived_at
       )
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9)
       ON CONFLICT (assignment_id)
       DO UPDATE SET
         course_id = EXCLUDED.course_id,
-        assistant_id = EXCLUDED.assistant_id,
         vector_store_id = EXCLUDED.vector_store_id,
         rubric = EXCLUDED.rubric,
         created_by = EXCLUDED.created_by,
@@ -149,7 +147,6 @@ export async function upsertAcsAssignment(input: UpsertAcsAssignmentInput) {
     [
       input.assignment_id,
       input.course_id,
-      input.assistant_id,
       input.vector_store_id,
       JSON.stringify(input.rubric),
       input.created_by,
@@ -168,13 +165,14 @@ export async function insertUploadedFiles(records: UploadedFileInsert[]) {
     return;
   }
 
-  const columns: Array<keyof UploadedFileInsert> = ['assignment_id', 'file_id', 'filename', 'type_file'];
+  const columns: Array<keyof UploadedFileInsert> = ['assignment_id', 'resource_id', 'file_id', 'filename', 'type_file'];
   const { placeholders, values } = buildBulkInsertValues(records, columns);
 
   await queryAux(
     `
       INSERT INTO acs_uploaded_files (
         assignment_id,
+        resource_id,
         file_id,
         filename,
         type_file
@@ -195,6 +193,21 @@ export async function getUploadedFilesByAssignmentId(assignmentId: string) {
       ORDER BY created_at ASC
     `,
     [assignmentId]
+  );
+}
+
+// Cross-assignment lookup: find files by LMS resource_id (shared across assignments)
+export async function getUploadedFilesByResourceIds(resourceIds: number[]) {
+  if (resourceIds.length === 0) return [];
+  const placeholders = resourceIds.map((_, i) => `$${i + 1}`).join(', ');
+  return queryAux<AcsUploadedFileRecord>(
+    `
+      SELECT *
+      FROM acs_uploaded_files
+      WHERE resource_id IN (${placeholders})
+      ORDER BY created_at ASC
+    `,
+    resourceIds
   );
 }
 
