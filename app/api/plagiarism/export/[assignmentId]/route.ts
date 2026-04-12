@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { queryLMS } from '@/lib/lms-db';
-import { getComparisonsBySourceSubmissionIds } from '@/lib/db2/pds-repo';
+import { getComparisonsBySubmissionIds } from '@/lib/db2/pds-repo';
 
 export async function GET(
   request: Request,
@@ -32,7 +32,7 @@ export async function GET(
     const submissionIds = submissions.map(s => s.submission_id);
 
     // 2. Fetch Comparisons
-    const comparisons = await getComparisonsBySourceSubmissionIds(submissionIds);
+    const comparisons = await getComparisonsBySubmissionIds(submissionIds);
 
     // 3. Transform to CSV-friendly format
     // Row per match: Source Name, Target Name, Similarity %, Risk Level

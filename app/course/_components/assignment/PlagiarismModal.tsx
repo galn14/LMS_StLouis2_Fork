@@ -21,6 +21,7 @@ import {
   FaExclamationTriangle,
   FaCheckCircle,
   FaExclamationCircle,
+  FaHistory,
 } from 'react-icons/fa';
 
 interface PlagiarismModalProps {
@@ -53,6 +54,14 @@ interface ChunkMatch {
   similarity: number;
   source_text: string;
   target_text: string;
+  question_index?: number;
+}
+
+interface PerQuestionScore {
+  question_index: number;
+  semantic_score: number;
+  lexical_score: number;
+  combined_score: number;
 }
 
 interface EvidenceData {
@@ -64,6 +73,7 @@ interface EvidenceData {
   overall_similarity: number;
   risk_level: string;
   matched_chunks: ChunkMatch[];
+  per_question_scores?: PerQuestionScore[];
   flag_id: string | null;
   reviewed: boolean;
   is_false_positive: boolean;
@@ -72,6 +82,7 @@ interface EvidenceData {
 
 // Step 1 → Step 2 → Step 3
 type Step = 'confirm' | 'results' | 'comparison';
+type ScanScope = 'all' | 'specific';
 
 function riskLabel(level: string, similarity: number) {
   const pct = Math.round(similarity * 100);
@@ -84,6 +95,10 @@ function riskLabel(level: string, similarity: number) {
 export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModalProps) => {
   const [step, setStep] = useState<Step>('confirm');
 
+  // Scope selection
+  const [scanScope, setScanScope] = useState<ScanScope>('all');
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>([]);
+
   // Detection state
   const [detecting, setDetecting] = useState(false);
   const [detectionId, setDetectionId] = useState<string | null>(null);
@@ -95,6 +110,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
   const [results, setResults] = useState<StudentResult[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
   const [hasExistingResults, setHasExistingResults] = useState(false);
+  const [lastScanScope, setLastScanScope] = useState<string[] | null>(null);
 
   // Comparison state
   const [selectedStudent, setSelectedStudent] = useState<StudentResult | null>(null);
@@ -105,10 +121,15 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
   const [loadingEvidence, setLoadingEvidence] = useState(false);
 
   // Flag state
-  const [flagAction, setFlagAction] = useState('');
   const [flagNotes, setFlagNotes] = useState('');
   const [savingFlag, setSavingFlag] = useState(false);
   const [flagSaved, setFlagSaved] = useState(false);
+
+  // Derive essay questions once so they're usable in all steps
+  const essayQuestions = (assignment.questions ?? []).filter((q: any) => {
+    const t = (q.question_type || '').toUpperCase();
+    return t === 'ESSAY' || t === 'FILE_UPLOAD';
+  });
 
   // Reset on open
   useEffect(() => {
@@ -121,6 +142,8 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
       setSelectedStudent(null);
       setEvidence(null);
       setFlagSaved(false);
+      setScanScope('all');
+      setSelectedQuestionIds([]);
       checkExistingResults();
     }
   }, [isOpen, assignment?.id]);
@@ -148,12 +171,16 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
 
   const checkExistingResults = async () => {
     try {
-      const res = await fetch(`/api/plagiarism/results/${assignment.id}`);
+      const res = await fetch(`/api/plagiarism/status/latest/${assignment.id}`);
       const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        const anyMatch = data.some(r => r.high_risk_count > 0 || r.medium_risk_count > 0 || r.low_risk_count > 0);
-        setHasExistingResults(anyMatch);
-        setResults(data);
+      if (data && data.status === 'completed') {
+        setHasExistingResults(true);
+        setLastScanScope(data.scanned_question_ids ?? null);
+        const resultsRes = await fetch(`/api/plagiarism/results/${assignment.id}`);
+        const resultsData = await resultsRes.json();
+        if (Array.isArray(resultsData)) {
+          setResults(resultsData);
+        }
       }
     } catch { /* ignore */ }
   };
@@ -161,11 +188,18 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
   const loadResults = async () => {
     setLoadingResults(true);
     try {
-      const res = await fetch(`/api/plagiarism/results/${assignment.id}`);
-      const data = await res.json();
+      const [resultsRes, latestRes] = await Promise.all([
+        fetch(`/api/plagiarism/results/${assignment.id}`),
+        fetch(`/api/plagiarism/status/latest/${assignment.id}`),
+      ]);
+      const data = await resultsRes.json();
+      const latestData = await latestRes.json();
       if (Array.isArray(data)) {
         setResults(data);
         setStep('results');
+      }
+      if (latestData?.scanned_question_ids) {
+        setLastScanScope(latestData.scanned_question_ids);
       }
     } catch (err) {
       console.error('Failed to load results:', err);
@@ -174,24 +208,35 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
     }
   };
 
+  const toggleQuestionId = (qId: string) => {
+    setSelectedQuestionIds(prev =>
+      prev.includes(qId) ? prev.filter(id => id !== qId) : [...prev, qId]
+    );
+  };
+
   const startDetection = async () => {
+    if (scanScope === 'specific' && selectedQuestionIds.length === 0) {
+      setDetectionError('Please select at least one question to scan.');
+      return;
+    }
     setDetecting(true);
     setDetectionStatus('processing');
     setDetectionError(null);
     setDetectionProgress({ processed: 0, total: 0 });
     try {
+      const body: Record<string, unknown> = { assignmentId: assignment.id.toString() };
+      if (scanScope === 'specific') {
+        body.questionIds = selectedQuestionIds;
+      }
+      // scanScope === 'all' sends no questionIds, backend treats as "all"
       const res = await fetch('/api/plagiarism/detect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignmentId: assignment.id.toString() }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (data.detectionId) {
         setDetectionId(data.detectionId);
-      } else if (data.success !== false) {
-        setDetecting(false);
-        setDetectionStatus('completed');
-        loadResults();
       } else {
         setDetecting(false);
         setDetectionError(data.error || 'Something went wrong. Please try again.');
@@ -221,12 +266,12 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
 
   const openEvidence = async (match: SimilarityMatch) => {
     setSelectedMatch(match);
-    setFlagAction('');
     setFlagNotes('');
     setFlagSaved(false);
     setLoadingEvidence(true);
     try {
-      const res = await fetch(`/api/plagiarism/evidence/${match.comparison_id}`);
+      const subId = selectedStudent?.submission_id || '';
+      const res = await fetch(`/api/plagiarism/evidence/${match.comparison_id}?submissionId=${subId}`);
       const data = await res.json();
       setEvidence(data);
     } catch {
@@ -245,7 +290,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           flag_id: evidence.flag_id,
-          action: isFalsePositive ? 'marked_false_positive' : (flagAction || 'warning_sent'),
+          action: isFalsePositive ? 'marked_false_positive' : 'warning_sent',
           notes: flagNotes,
           is_false_positive: isFalsePositive,
         }),
@@ -275,6 +320,30 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
   }, [step, selectedMatch]);
 
   if (!isOpen) return null;
+
+  // Scope helpers
+  const scopeWillChange =
+    hasExistingResults &&
+    lastScanScope !== null &&
+    (
+      (scanScope === 'all' && !lastScanScope.includes('all')) ||
+      (scanScope === 'specific' && (
+        lastScanScope.includes('all') ||
+        selectedQuestionIds.slice().sort().join(',') !== lastScanScope.slice().sort().join(',')
+      ))
+    );
+
+  const scopeBadgeText = (() => {
+    if (!lastScanScope) return null;
+    if (lastScanScope.includes('all')) {
+      return `Full scan — all ${essayQuestions.length} essay question${essayQuestions.length !== 1 ? 's' : ''}`;
+    }
+    const labels = lastScanScope.map(id => {
+      const idx = essayQuestions.findIndex((q: any) => q.id.toString() === id);
+      return idx >= 0 ? `Q${idx + 1}` : id;
+    });
+    return `Partial scan — ${labels.join(', ')}`;
+  })();
 
   // --- Bucket students by risk ---
   const highRiskStudents = results.filter(r => r.high_risk_count > 0);
@@ -317,22 +386,94 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                 <div>
                   <h3 className="font-semibold text-amber-800 mb-1">How it works</h3>
                   <p className="text-sm text-amber-700 leading-relaxed">
-                    The system will read all student essay answers, then compare every student&apos;s
-                    work against each other to find similar writing. This usually takes
-                    <strong> 1–3 minutes</strong> depending on the number of submissions.
+                    The system reads student essay answers and compares every student&apos;s
+                    work against each other question-by-question to find similar writing.
+                    This usually takes <strong>1–3 minutes</strong> depending on submissions.
                   </p>
                 </div>
               </div>
             </div>
 
+            {/* Scope selector */}
+            {essayQuestions.length > 0 ? (
+              <div className="border border-gray-200 rounded-xl p-4 space-y-3">
+                <p className="text-sm font-semibold text-gray-700">What to scan</p>
+                <div className="space-y-2">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="scanScope"
+                      value="all"
+                      checked={scanScope === 'all'}
+                      onChange={() => { setScanScope('all'); setSelectedQuestionIds([]); }}
+                      className="accent-amber-600"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-800">All essay questions</span>
+                      <p className="text-xs text-gray-500">
+                        Compare answers to all {essayQuestions.length} essay question{essayQuestions.length !== 1 ? 's' : ''} — most thorough
+                      </p>
+                    </div>
+                  </label>
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="scanScope"
+                      value="specific"
+                      checked={scanScope === 'specific'}
+                      onChange={() => setScanScope('specific')}
+                      className="accent-amber-600"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-gray-800">Specific questions</span>
+                      <p className="text-xs text-gray-500">Choose one or more questions to compare</p>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Question checkbox list */}
+                {scanScope === 'specific' && (
+                  <div className="mt-2 border border-gray-100 rounded-lg divide-y divide-gray-100">
+                    {essayQuestions.map((q: any, idx: number) => (
+                      <label
+                        key={q.id}
+                        className="flex items-start gap-3 px-3 py-2.5 cursor-pointer hover:bg-gray-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedQuestionIds.includes(q.id.toString())}
+                          onChange={() => toggleQuestionId(q.id.toString())}
+                          className="mt-0.5 accent-amber-600"
+                        />
+                        <div className="min-w-0">
+                          <span className="text-xs font-semibold text-amber-700 mr-1.5">Q{idx + 1}</span>
+                          <span className="text-sm text-gray-700">
+                            {q.question_text.length > 100
+                              ? q.question_text.slice(0, 100) + '…'
+                              : q.question_text}
+                          </span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 text-center text-sm text-gray-500">
+                No essay questions found in this assignment. Plagiarism check applies to essay and file-upload questions only.
+              </div>
+            )}
+
             {/* Stats */}
             <div className="grid grid-cols-2 gap-4">
               <div className="border rounded-xl p-4 text-center">
                 <div className="text-3xl font-bold text-gray-800">{submissionCount}</div>
-                <div className="text-sm text-gray-500 mt-1">Essays to check</div>
+                <div className="text-sm text-gray-500 mt-1">Submissions to check</div>
               </div>
               <div className="border rounded-xl p-4 text-center">
-                <div className="text-3xl font-bold text-gray-800">{submissionCount > 1 ? `${submissionCount * (submissionCount - 1) / 2}` : '—'}</div>
+                <div className="text-3xl font-bold text-gray-800">
+                  {submissionCount > 1 ? `${submissionCount * (submissionCount - 1) / 2}` : '—'}
+                </div>
                 <div className="text-sm text-gray-500 mt-1">Pairs to compare</div>
               </div>
             </div>
@@ -343,14 +484,33 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
               </div>
             )}
 
+            {/* Scope-change warning */}
+            {scopeWillChange && (
+              <div className="flex items-start gap-3 bg-yellow-50 border border-yellow-200 rounded-xl p-4">
+                <FaExclamationTriangle className="text-yellow-500 mt-0.5 shrink-0" size={15} />
+                <div>
+                  <p className="text-sm font-medium text-yellow-800">Scope change detected</p>
+                  <p className="text-xs text-yellow-700 mt-0.5">
+                    Previous scan: <strong>{scopeBadgeText}</strong>.
+                    Running a new scan with different scope will replace those results.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Existing results notice */}
             {hasExistingResults && (
               <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-xl p-4">
                 <div>
-                  <p className="text-sm font-medium text-blue-800">Previous results available</p>
-                  <p className="text-xs text-blue-600 mt-0.5">You can view past results or run a fresh check.</p>
+                  <div className="flex items-center gap-2">
+                    <FaHistory size={12} className="text-blue-500" />
+                    <p className="text-sm font-medium text-blue-800">Previous results available</p>
+                  </div>
+                  {scopeBadgeText && (
+                    <p className="text-xs text-blue-600 mt-0.5">{scopeBadgeText}</p>
+                  )}
                 </div>
-                <Button variant="outline" size="sm" onClick={() => { loadResults(); }} className="ml-4 shrink-0">
+                <Button variant="outline" size="sm" onClick={() => loadResults()} className="ml-4 shrink-0">
                   View Past Results
                 </Button>
               </div>
@@ -368,7 +528,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-5">
                 <div className="flex items-center gap-2 mb-3">
                   <FaSpinner className="animate-spin text-blue-600" />
-                  <span className="font-medium text-blue-800">Checking for plagiarism...</span>
+                  <span className="font-medium text-blue-800">Checking for plagiarism…</span>
                 </div>
                 {detectionProgress.total > 0 && (
                   <>
@@ -390,7 +550,12 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
             <div className="flex items-center gap-3 pt-2">
               <Button
                 onClick={startDetection}
-                disabled={detecting || submissionCount < 2}
+                disabled={
+                  detecting ||
+                  submissionCount < 2 ||
+                  essayQuestions.length === 0 ||
+                  (scanScope === 'specific' && selectedQuestionIds.length === 0)
+                }
                 className="flex items-center gap-2 bg-amber-600 hover:bg-amber-700 text-white"
               >
                 {detecting ? <FaSpinner className="animate-spin" size={13} /> : <FaPlay size={13} />}
@@ -413,19 +578,27 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
               </div>
             ) : (
               <>
+                {/* Scope badge */}
+                {scopeBadgeText && (
+                  <div className="flex items-center gap-2 px-3 py-2 bg-gray-100 rounded-lg w-fit text-xs text-gray-600 font-medium">
+                    <FaShieldAlt className="text-amber-500" size={11} />
+                    {scopeBadgeText}
+                  </div>
+                )}
+
                 {/* Summary bar */}
                 <div className="grid grid-cols-3 gap-3">
                   <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-center">
                     <div className="text-2xl font-bold text-red-700">{highRiskStudents.length}</div>
-                    <div className="text-xs text-red-600 mt-0.5">🚨 Likely Copied</div>
+                    <div className="text-xs text-red-600 mt-0.5">Likely Copied</div>
                   </div>
                   <div className="bg-orange-50 border border-orange-200 rounded-xl p-3 text-center">
                     <div className="text-2xl font-bold text-orange-700">{mediumRiskStudents.length}</div>
-                    <div className="text-xs text-orange-600 mt-0.5">⚠️ Needs Review</div>
+                    <div className="text-xs text-orange-600 mt-0.5">Needs Review</div>
                   </div>
                   <div className="bg-green-50 border border-green-200 rounded-xl p-3 text-center">
                     <div className="text-2xl font-bold text-green-700">{cleanStudents.length}</div>
-                    <div className="text-xs text-green-600 mt-0.5">✅ No Issues</div>
+                    <div className="text-xs text-green-600 mt-0.5">No Issues</div>
                   </div>
                 </div>
 
@@ -439,7 +612,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                   </button>
                 </div>
 
-                {/* 🚨 High risk group */}
+                {/* High risk group */}
                 {highRiskStudents.length > 0 && (
                   <div>
                     <div className="flex items-center gap-2 mb-3">
@@ -454,7 +627,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                   </div>
                 )}
 
-                {/* ⚠️ Medium risk group */}
+                {/* Medium risk group */}
                 {mediumRiskStudents.length > 0 && (
                   <div>
                     <div className="flex items-center gap-2 mb-3">
@@ -469,7 +642,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                   </div>
                 )}
 
-                {/* ✅ Clean group */}
+                {/* Clean group */}
                 {cleanStudents.length > 0 && (
                   <div>
                     <div className="flex items-center gap-2 mb-2">
@@ -485,7 +658,9 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                 )}
 
                 {results.length === 0 && (
-                  <div className="text-center py-8 text-gray-500">No results found. Try running the check again.</div>
+                  <div className="text-center py-8 text-gray-500">
+                    No results found. Try running the check again.
+                  </div>
                 )}
               </>
             )}
@@ -557,122 +732,15 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                     <p>Loading comparison…</p>
                   </div>
                 ) : evidence ? (
-                  <div className="space-y-5">
-                    {/* Similarity summary */}
-                    <div className={`rounded-xl p-4 border ${riskLabel(evidence.risk_level, evidence.overall_similarity).bg}`}>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          {riskLabel(evidence.risk_level, evidence.overall_similarity).icon}
-                          <div>
-                            <p className="font-semibold text-gray-800">
-                              {evidence.source_student} &amp; {evidence.target_student}
-                            </p>
-                            <p className={`text-sm font-semibold ${riskLabel(evidence.risk_level, evidence.overall_similarity).color}`}>
-                              {riskLabel(evidence.risk_level, evidence.overall_similarity).label}
-                            </p>
-                          </div>
-                        </div>
-                        {evidence.reviewed && (
-                          <span className={`text-xs px-3 py-1 rounded-full font-medium ${evidence.is_false_positive ? 'bg-gray-100 text-gray-600' : 'bg-green-100 text-green-700'}`}>
-                            {evidence.is_false_positive ? '✓ Dismissed' : '✓ Reviewed'}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Side-by-side texts */}
-                    <div>
-                      <h4 className="text-sm font-semibold text-gray-600 mb-2">Student Answers</h4>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="rounded-xl border border-blue-200 overflow-hidden">
-                          <div className="bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 border-b border-blue-200">
-                            {evidence.source_student}
-                          </div>
-                          <div className="p-3 text-sm leading-relaxed text-gray-700 max-h-48 overflow-y-auto whitespace-pre-wrap">
-                            {evidence.source_content || 'No content'}
-                          </div>
-                        </div>
-                        <div className="rounded-xl border border-orange-200 overflow-hidden">
-                          <div className="bg-orange-50 px-3 py-2 text-xs font-semibold text-orange-700 border-b border-orange-200">
-                            {evidence.target_student}
-                          </div>
-                          <div className="p-3 text-sm leading-relaxed text-gray-700 max-h-48 overflow-y-auto whitespace-pre-wrap">
-                            {evidence.target_content || 'No content'}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Matching sections */}
-                    {evidence.matched_chunks && evidence.matched_chunks.length > 0 && (
-                      <div>
-                        <h4 className="text-sm font-semibold text-gray-600 mb-2">
-                          Sections that match ({evidence.matched_chunks.length} found)
-                        </h4>
-                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-                          {evidence.matched_chunks.map((chunk, i) => (
-                            <div key={i} className="grid grid-cols-2 gap-2">
-                              <div className="rounded-lg bg-blue-50 border border-blue-100 p-2.5 text-xs text-gray-700 leading-relaxed">
-                                {chunk.source_text}
-                              </div>
-                              <div className="rounded-lg bg-orange-50 border border-orange-100 p-2.5 text-xs text-gray-700 leading-relaxed">
-                                {chunk.target_text}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Teacher decision panel */}
-                    {evidence.flag_id && !evidence.reviewed && !flagSaved && (
-                      <div className="border-t pt-5">
-                        <h4 className="text-sm font-semibold text-gray-700 mb-3">What do you want to do?</h4>
-                        <div className="space-y-3">
-                          <textarea
-                            value={flagNotes}
-                            onChange={e => setFlagNotes(e.target.value)}
-                            placeholder="Add a note (optional) — e.g. 'Students studied together' or 'Will send warning'"
-                            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
-                            rows={2}
-                          />
-                          <div className="flex items-center gap-3">
-                            <Button
-                              onClick={() => saveFlag(false)}
-                              disabled={savingFlag}
-                              className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white"
-                            >
-                              {savingFlag ? <FaSpinner className="animate-spin" size={12} /> : <FaExclamationCircle size={12} />}
-                              Flag as Plagiarism
-                            </Button>
-                            <Button
-                              variant="outline"
-                              onClick={() => saveFlag(true)}
-                              disabled={savingFlag}
-                              className="flex items-center gap-2"
-                            >
-                              <FaTimes size={12} /> Dismiss — Not Plagiarism
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Already acted */}
-                    {(evidence.reviewed || flagSaved) && (
-                      <div className={`rounded-xl p-4 flex items-center gap-3 ${evidence.is_false_positive ? 'bg-gray-50 border border-gray-200' : 'bg-green-50 border border-green-200'}`}>
-                        {evidence.is_false_positive ? <FaTimes className="text-gray-500" /> : <FaCheck className="text-green-600" />}
-                        <div>
-                          <p className="text-sm font-semibold text-gray-800">
-                            {evidence.is_false_positive ? 'Dismissed as not plagiarism' : 'Flagged as plagiarism'}
-                          </p>
-                          {evidence.teacher_notes && (
-                            <p className="text-xs text-gray-500 mt-0.5">Note: {evidence.teacher_notes}</p>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  <EvidencePanel
+                    evidence={evidence}
+                    essayQuestions={essayQuestions}
+                    flagNotes={flagNotes}
+                    setFlagNotes={setFlagNotes}
+                    savingFlag={savingFlag}
+                    flagSaved={flagSaved}
+                    onSaveFlag={saveFlag}
+                  />
                 ) : (
                   <div className="text-center py-8 text-gray-400">Could not load comparison details.</div>
                 )}
@@ -712,5 +780,195 @@ function StudentResultRow({ student, onClick }: { student: StudentResult; onClic
       </div>
       <FaChevronRight className="text-gray-400 group-hover:text-gray-600 transition-colors shrink-0" size={13} />
     </button>
+  );
+}
+
+// ── Sub-component: evidence panel ──────────────────────────────
+interface EvidencePanelProps {
+  evidence: EvidenceData;
+  essayQuestions: any[];
+  flagNotes: string;
+  setFlagNotes: (v: string) => void;
+  savingFlag: boolean;
+  flagSaved: boolean;
+  onSaveFlag: (isFalsePositive: boolean) => void;
+}
+
+function EvidencePanel({ evidence, essayQuestions, flagNotes, setFlagNotes, savingFlag, flagSaved, onSaveFlag }: EvidencePanelProps) {
+  const riskInfo = riskLabel(evidence.risk_level, evidence.overall_similarity);
+
+  // Group matched chunks by question_index for labelled display
+  const chunksByQuestion = new Map<number, ChunkMatch[]>();
+  for (const chunk of (evidence.matched_chunks ?? [])) {
+    const qi = chunk.question_index ?? 0;
+    if (!chunksByQuestion.has(qi)) chunksByQuestion.set(qi, []);
+    chunksByQuestion.get(qi)!.push(chunk);
+  }
+  const sortedQIs = [...chunksByQuestion.keys()].sort((a, b) => a - b);
+
+  // Map question_index → display label (Q1, Q2, …) using essayQuestions order
+  const questionLabel = (qi: number) => {
+    if (qi < essayQuestions.length) return `Q${qi + 1}`;
+    return `Question ${qi + 1}`;
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Similarity summary */}
+      <div className={`rounded-xl p-4 border ${riskInfo.bg}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            {riskInfo.icon}
+            <div>
+              <p className="font-semibold text-gray-800">
+                {evidence.source_student} &amp; {evidence.target_student}
+              </p>
+              <p className={`text-sm font-semibold ${riskInfo.color}`}>{riskInfo.label}</p>
+            </div>
+          </div>
+          {evidence.reviewed && (
+            <span className={`text-xs px-3 py-1 rounded-full font-medium ${evidence.is_false_positive ? 'bg-gray-100 text-gray-600' : 'bg-green-100 text-green-700'}`}>
+              {evidence.is_false_positive ? '✓ Dismissed' : '✓ Reviewed'}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Per-question score breakdown */}
+      {evidence.per_question_scores && evidence.per_question_scores.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-gray-600 mb-2">Per-answer similarity</h4>
+          <div className="space-y-2">
+            {evidence.per_question_scores
+              .sort((a, b) => a.question_index - b.question_index)
+              .map(qs => {
+                const pct = Math.round(qs.combined_score * 100);
+                const barColor = pct >= 80 ? 'bg-red-500' : pct >= 60 ? 'bg-orange-400' : pct >= 40 ? 'bg-yellow-400' : 'bg-gray-300';
+                const textColor = pct >= 80 ? 'text-red-700' : pct >= 60 ? 'text-orange-700' : pct >= 40 ? 'text-yellow-700' : 'text-gray-500';
+                return (
+                  <div key={qs.question_index} className="flex items-center gap-3">
+                    <span className="text-xs font-semibold text-gray-600 w-8 shrink-0">{questionLabel(qs.question_index)}</span>
+                    <div className="flex-1 bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${barColor}`}
+                        style={{ width: `${Math.max(pct, 2)}%` }}
+                      />
+                    </div>
+                    <span className={`text-xs font-bold w-10 text-right ${textColor}`}>{pct}%</span>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
+      {/* Side-by-side full answers */}
+      <div>
+        <h4 className="text-sm font-semibold text-gray-600 mb-2">Student Answers</h4>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="rounded-xl border border-blue-200 overflow-hidden">
+            <div className="bg-blue-50 px-3 py-2 text-xs font-semibold text-blue-700 border-b border-blue-200">
+              {evidence.source_student}
+            </div>
+            <div className="p-3 text-sm leading-relaxed text-gray-700 max-h-48 overflow-y-auto whitespace-pre-wrap">
+              {evidence.source_content || 'No content'}
+            </div>
+          </div>
+          <div className="rounded-xl border border-orange-200 overflow-hidden">
+            <div className="bg-orange-50 px-3 py-2 text-xs font-semibold text-orange-700 border-b border-orange-200">
+              {evidence.target_student}
+            </div>
+            <div className="p-3 text-sm leading-relaxed text-gray-700 max-h-48 overflow-y-auto whitespace-pre-wrap">
+              {evidence.target_content || 'No content'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Matching sections — grouped by question */}
+      {sortedQIs.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-gray-600 mb-2">
+            Matching sections ({evidence.matched_chunks.length} found)
+          </h4>
+          <div className="space-y-4 max-h-72 overflow-y-auto pr-1">
+            {sortedQIs.map(qi => (
+              <div key={qi}>
+                {/* Question label only shown when more than one question has matches */}
+                {sortedQIs.length > 1 && (
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                      {questionLabel(qi)}
+                    </span>
+                    <div className="flex-1 h-px bg-gray-100" />
+                  </div>
+                )}
+                <div className="space-y-2">
+                  {chunksByQuestion.get(qi)!.map((chunk, i) => (
+                    <div key={i} className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg bg-blue-50 border border-blue-100 p-2.5 text-xs text-gray-700 leading-relaxed">
+                        {chunk.source_text}
+                      </div>
+                      <div className="rounded-lg bg-orange-50 border border-orange-100 p-2.5 text-xs text-gray-700 leading-relaxed">
+                        {chunk.target_text}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Teacher decision panel */}
+      {evidence.flag_id && !evidence.reviewed && !flagSaved && (
+        <div className="border-t pt-5">
+          <h4 className="text-sm font-semibold text-gray-700 mb-3">What do you want to do?</h4>
+          <div className="space-y-3">
+            <textarea
+              value={flagNotes}
+              onChange={e => setFlagNotes(e.target.value)}
+              placeholder="Add a note (optional) — e.g. 'Students studied together' or 'Will send warning'"
+              className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-400 resize-none"
+              rows={2}
+            />
+            <div className="flex items-center gap-3">
+              <Button
+                onClick={() => onSaveFlag(false)}
+                disabled={savingFlag}
+                className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white"
+              >
+                {savingFlag ? <FaSpinner className="animate-spin" size={12} /> : <FaExclamationCircle size={12} />}
+                Flag as Plagiarism
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => onSaveFlag(true)}
+                disabled={savingFlag}
+                className="flex items-center gap-2"
+              >
+                <FaTimes size={12} /> Dismiss — Not Plagiarism
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Already acted */}
+      {(evidence.reviewed || flagSaved) && (
+        <div className={`rounded-xl p-4 flex items-center gap-3 ${evidence.is_false_positive ? 'bg-gray-50 border border-gray-200' : 'bg-green-50 border border-green-200'}`}>
+          {evidence.is_false_positive ? <FaTimes className="text-gray-500" /> : <FaCheck className="text-green-600" />}
+          <div>
+            <p className="text-sm font-semibold text-gray-800">
+              {evidence.is_false_positive ? 'Dismissed as not plagiarism' : 'Flagged as plagiarism'}
+            </p>
+            {evidence.teacher_notes && (
+              <p className="text-xs text-gray-500 mt-0.5">Note: {evidence.teacher_notes}</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

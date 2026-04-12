@@ -20,6 +20,10 @@ export async function GET(
 
     const { comparisonId } = await params;
 
+    // Accept optional submissionId query param to identify which student is viewing
+    const url = new URL(request.url);
+    const viewingSubmissionId = url.searchParams.get('submissionId');
+
     // 1. Fetch Comparison Data (DB2)
     const comparison = await getComparisonById(comparisonId);
 
@@ -27,27 +31,35 @@ export async function GET(
       return NextResponse.json({ error: 'Comparison not found' }, { status: 404 });
     }
 
-    // 2. Fetch Flag Data (if exists)
+    // 2. Determine which submission is the "viewer" for flag lookup
+    const flagSubmissionId = viewingSubmissionId
+      && (viewingSubmissionId === comparison.source_submission_id || viewingSubmissionId === comparison.target_submission_id)
+      ? viewingSubmissionId
+      : comparison.source_submission_id;
+
     const flag = await getFlagByComparisonAndSubmission(
       comparisonId,
-      comparison.source_submission_id
+      flagSubmissionId
     );
 
     // 3. Fetch Full Text Content (LMS)
-    // We need the full text for display, not just chunks.
     const sourceId = parseInt(comparison.source_submission_id);
     const targetId = parseInt(comparison.target_submission_id);
 
-    // Fetch both in one query or two. Let's do one.
     const sql = `
-      SELECT 
+      SELECT
         s.id::text as submission_id,
         u.nama_lengkap as student_name,
-        string_agg(a.answer_text, '\n\n') as content
+        string_agg(a.answer_text, E'\n\n' ORDER BY q.order_number) as content
       FROM assignment_submissions s
       JOIN app_user u ON s.student_id = u.id
       JOIN assignment_answers a ON s.id = a.submission_id
+      JOIN assignment_questions q ON a.question_id = q.id
+      JOIN enumeration e ON q.question_type_id = e.id
       WHERE s.id IN ($1, $2)
+        AND a.answer_text IS NOT NULL
+        AND a.answer_text <> ''
+        AND UPPER(e.name) IN ('ESSAY', 'FILE_UPLOAD')
       GROUP BY s.id, u.nama_lengkap
     `;
 
@@ -60,7 +72,13 @@ export async function GET(
       return NextResponse.json({ error: 'Submission content not found in LMS' }, { status: 404 });
     }
 
-    // 4. Construct Response
+    // Parse matched_chunks: new format is { chunks, per_question_scores },
+    // old format is a plain array. Handle both for backward compatibility.
+    const rawMC = comparison.matched_chunks;
+    const isNewFormat = rawMC && typeof rawMC === 'object' && !Array.isArray(rawMC);
+    const chunks = isNewFormat ? (rawMC as any).chunks ?? [] : (Array.isArray(rawMC) ? rawMC : []);
+    const perQuestionScores = isNewFormat ? (rawMC as any).per_question_scores ?? [] : [];
+
     return NextResponse.json({
       comparison_id: comparison.id,
       source_student: sourceSub.student_name,
@@ -69,8 +87,8 @@ export async function GET(
       target_content: targetSub.content,
       overall_similarity: comparison.combined_score,
       risk_level: comparison.risk_level,
-      matched_chunks: comparison.matched_chunks,
-      // Flag info
+      matched_chunks: chunks,
+      per_question_scores: perQuestionScores,
       flag_id: flag?.id || null,
       reviewed: flag?.reviewed || false,
       is_false_positive: flag?.is_false_positive || false,
@@ -81,7 +99,7 @@ export async function GET(
     console.error('API Error:', error);
     return NextResponse.json(
       { error: 'Internal Server Error', details: error.message },
-      { status: 500 } 
+      { status: 500 }
     );
   }
 }

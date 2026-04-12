@@ -4,6 +4,7 @@ interface DetectionInsert {
   assignment_id: string;
   status: string;
   created_by: string;
+  scanned_question_ids: string[];
 }
 
 interface DetectionUpdate {
@@ -18,6 +19,7 @@ interface ChunkInsert {
   submission_id: string;
   content: string;
   chunk_index: number;
+  question_index: number;
   start_char: number;
   end_char: number;
   token_count: number;
@@ -125,12 +127,13 @@ export async function createDetection(input: DetectionInsert) {
       INSERT INTO pds_detections (
         assignment_id,
         status,
-        created_by
+        created_by,
+        scanned_question_ids
       )
-      VALUES ($1, $2, $3)
+      VALUES ($1, $2, $3, $4)
       RETURNING id
     `,
-    [input.assignment_id, input.status, input.created_by]
+    [input.assignment_id, input.status, input.created_by, input.scanned_question_ids]
   );
 
   return rows[0];
@@ -183,6 +186,7 @@ export async function insertChunksReturningIds(chunks: ChunkInsert[]) {
     'submission_id',
     'content',
     'chunk_index',
+    'question_index',
     'start_char',
     'end_char',
     'token_count',
@@ -195,6 +199,7 @@ export async function insertChunksReturningIds(chunks: ChunkInsert[]) {
         submission_id,
         content,
         chunk_index,
+        question_index,
         start_char,
         end_char,
         token_count
@@ -318,7 +323,7 @@ export async function insertFlags(rows: FlagInsert[]) {
   );
 }
 
-export async function getComparisonsBySourceSubmissionIds(submissionIds: string[]) {
+export async function getComparisonsBySubmissionIds(submissionIds: string[]) {
   if (submissionIds.length === 0) {
     return [];
   }
@@ -337,14 +342,16 @@ export async function getComparisonsBySourceSubmissionIds(submissionIds: string[
         combined_score
       FROM pds_comparisons
       WHERE source_submission_id = ANY($1::text[])
+         OR target_submission_id = ANY($1::text[])
     `,
     [submissionIds]
   );
 }
 
-export async function getComparisonsBySourceSubmissionId(submissionId: string) {
+export async function getComparisonsBySubmissionId(submissionId: string) {
   return queryAux<{
     id: string;
+    source_submission_id: string;
     target_submission_id: string;
     combined_score: number;
     risk_level: 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
@@ -353,12 +360,14 @@ export async function getComparisonsBySourceSubmissionId(submissionId: string) {
     `
       SELECT
         id,
+        source_submission_id,
         target_submission_id,
         combined_score,
         risk_level,
         matched_chunks
       FROM pds_comparisons
       WHERE source_submission_id = $1
+         OR target_submission_id = $1
       ORDER BY combined_score DESC
     `,
     [submissionId]
@@ -461,4 +470,69 @@ export async function insertAuditLog(input: AuditLogInsert) {
       JSON.stringify(input.metadata ?? {}),
     ]
   );
+}
+
+export async function cleanupPreviousDetectionData(submissionIds: string[]) {
+  if (submissionIds.length === 0) return;
+
+  // Delete flags → comparisons → embeddings → chunks (respecting FK order)
+  await queryAux(
+    `
+      DELETE FROM pds_flags
+      WHERE comparison_id IN (
+        SELECT id FROM pds_comparisons
+        WHERE source_submission_id = ANY($1::text[])
+           OR target_submission_id = ANY($1::text[])
+      )
+    `,
+    [submissionIds]
+  );
+
+  await queryAux(
+    `
+      DELETE FROM pds_comparisons
+      WHERE source_submission_id = ANY($1::text[])
+         OR target_submission_id = ANY($1::text[])
+    `,
+    [submissionIds]
+  );
+
+  await queryAux(
+    `
+      DELETE FROM pds_embeddings
+      WHERE chunk_id IN (
+        SELECT id FROM pds_chunks
+        WHERE submission_id = ANY($1::text[])
+      )
+    `,
+    [submissionIds]
+  );
+
+  await queryAux(
+    `
+      DELETE FROM pds_chunks
+      WHERE submission_id = ANY($1::text[])
+    `,
+    [submissionIds]
+  );
+}
+
+export async function getLatestDetectionForAssignment(assignmentId: string) {
+  const rows = await queryAux<{
+    id: string;
+    status: string;
+    completed_at: string | null;
+    scanned_question_ids: string[];
+  }>(
+    `
+      SELECT id, status, completed_at, scanned_question_ids
+      FROM pds_detections
+      WHERE assignment_id = $1
+      ORDER BY started_at DESC
+      LIMIT 1
+    `,
+    [assignmentId]
+  );
+
+  return rows[0] ?? null;
 }

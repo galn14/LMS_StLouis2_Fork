@@ -250,11 +250,22 @@ export async function POST(request: NextRequest) {
     });
 
     // Create student details if STUDENT role is selected
-    if (role === '1' && (nis || nisn || parent_contact)) {
+    // nis is required (non-nullable, unique) in student_details
+    if (role === '1' && nis) {
+      // Check for duplicate NIS before inserting
+      const existingNis = await prisma.student_details.findUnique({ where: { nis } });
+      if (existingNis) {
+        await prisma.app_user.delete({ where: { id: newUser.id } });
+        return NextResponse.json(
+          { success: false, error: 'NIS already exists' },
+          { status: 400 }
+        );
+      }
+
       await prisma.student_details.create({
         data: {
           user_id: newUser.id,
-          nis: nis || '',
+          nis,
           nisn: nisn || '',
           parent_contact: parent_contact || '',
         },

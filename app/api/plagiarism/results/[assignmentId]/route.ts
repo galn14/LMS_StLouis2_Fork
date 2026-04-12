@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { queryLMS } from '@/lib/lms-db';
-import { getComparisonsBySourceSubmissionIds } from '@/lib/db2/pds-repo';
+import { getComparisonsBySubmissionIds } from '@/lib/db2/pds-repo';
 
 interface StudentResult {
   student_id: string;
@@ -27,11 +27,13 @@ export async function GET(
 
     const { assignmentId } = await params;
 
-    // 1. Fetch all submissions for this assignment from LMS (Read-Only)
-    // We need student names and IDs
-    // Note: LMS DB schema uses Int for IDs, we cast to text for consistency
+    const numericId = parseInt(assignmentId, 10);
+    if (isNaN(numericId)) {
+        return NextResponse.json({ error: 'Invalid Assignment ID' }, { status: 400 });
+    }
+
     const sql = `
-      SELECT 
+      SELECT
         s.id::text as submission_id,
         s.student_id::text as student_id,
         u.nama_lengkap as student_name
@@ -39,12 +41,6 @@ export async function GET(
       JOIN app_user u ON s.student_id = u.id
       WHERE s.assignment_id = $1
     `;
-    
-    // Validate assignmentId is numeric
-    const numericId = parseInt(assignmentId, 10);
-    if (isNaN(numericId)) {
-        return NextResponse.json({ error: 'Invalid Assignment ID' }, { status: 400 });
-    }
 
     const submissions = await queryLMS<{ submission_id: string, student_id: string, student_name: string }>(sql, [numericId]);
 
@@ -52,29 +48,35 @@ export async function GET(
       return NextResponse.json([]);
     }
 
-    // 2. Fetch all comparisons for these submissions from DB2
+    // Fetch comparisons where any of these submissions appear as source OR target
     const submissionIds = submissions.map(s => s.submission_id);
-    const comparisons = await getComparisonsBySourceSubmissionIds(submissionIds);
+    const submissionIdSet = new Set(submissionIds);
+    const comparisons = await getComparisonsBySubmissionIds(submissionIds);
 
-    // 3. Aggregate results
-    // Map: submission_id -> stats
+    // Aggregate stats for each submission from both directions
     const statsMap = new Map<string, { high: number, medium: number, low: number, max: number }>();
 
     comparisons.forEach(comp => {
-      const current = statsMap.get(comp.source_submission_id) || { high: 0, medium: 0, low: 0, max: 0 };
-      
-      if (comp.risk_level === 'HIGH') current.high++;
-      else if (comp.risk_level === 'MEDIUM') current.medium++;
-      else if (comp.risk_level === 'LOW') current.low++;
+      // For each comparison, credit both the source and target student
+      const involvedIds: string[] = [];
+      if (submissionIdSet.has(comp.source_submission_id)) involvedIds.push(comp.source_submission_id);
+      if (submissionIdSet.has(comp.target_submission_id)) involvedIds.push(comp.target_submission_id);
 
-      if (comp.combined_score > current.max) {
-        current.max = comp.combined_score;
+      for (const subId of involvedIds) {
+        const current = statsMap.get(subId) || { high: 0, medium: 0, low: 0, max: 0 };
+
+        if (comp.risk_level === 'HIGH') current.high++;
+        else if (comp.risk_level === 'MEDIUM') current.medium++;
+        else if (comp.risk_level === 'LOW') current.low++;
+
+        if (comp.combined_score > current.max) {
+          current.max = comp.combined_score;
+        }
+
+        statsMap.set(subId, current);
       }
-
-      statsMap.set(comp.source_submission_id, current);
     });
 
-    // 4. Combine LMS data with PDS stats
     const results: StudentResult[] = submissions.map(sub => {
       const stats = statsMap.get(sub.submission_id) || { high: 0, medium: 0, low: 0, max: 0 };
       return {
