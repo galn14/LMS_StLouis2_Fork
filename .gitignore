@@ -56,4 +56,3 @@ AGENTS.md
 /.env
 /.env.local
 /.env.production
-/.superset

@@ -1,4 +1,3 @@
-
 import { initDetection, processDetection } from '@/lib/plagiarism/detection';
 import { queryLMS } from '@/lib/lms-db';
 import { generateEmbeddingsBatch } from '@/lib/plagiarism/embeddings';
@@ -27,6 +26,7 @@ jest.mock('@/lib/db2/pds-repo', () => ({
   insertComparisons: jest.fn(),
   insertFlags: jest.fn(),
   insertAuditLog: jest.fn(),
+  findSimilarChunksLateral: jest.fn(),
 }));
 
 jest.mock('@/lib/plagiarism/embeddings', () => ({
@@ -44,19 +44,21 @@ describe('plagiarism detection', () => {
   const mockInsertComparisons = insertComparisons as jest.Mock;
   const mockInsertFlags = insertFlags as jest.Mock;
   const mockInsertAuditLog = insertAuditLog as jest.Mock;
+  const mockFindSimilarChunksLateral = require('@/lib/db2/pds-repo').findSimilarChunksLateral as jest.Mock;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockCreateDetection.mockResolvedValue({ id: 'detection-123' });
     mockUpdateDetection.mockResolvedValue(undefined);
     mockCleanup.mockResolvedValue(undefined);
-    mockInsertChunksReturningIds.mockImplementation((chunks) =>
+    mockInsertChunksReturningIds.mockImplementation((chunks: any) =>
       Promise.resolve(chunks.map((c: any) => ({ id: `chunk-${c.chunk_index}`, chunk_index: c.chunk_index })))
     );
     mockInsertEmbeddings.mockResolvedValue(undefined);
     mockInsertComparisons.mockResolvedValue(undefined);
     mockInsertFlags.mockResolvedValue(undefined);
     mockInsertAuditLog.mockResolvedValue(undefined);
+    mockFindSimilarChunksLateral.mockResolvedValue([]);
   });
 
   describe('initDetection', () => {
@@ -94,11 +96,33 @@ describe('plagiarism detection', () => {
         { submission_id: 'sub-2', student_id: 'student-B', question_id: 'q-2', answer_text: 'Second essay answer here.' },
       ]);
 
-      // Identical vectors → cosine = 1.0 per question
       mockGenerateEmbeddingsBatch.mockResolvedValue({
         vectors: [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
         totalTokens: 20,
       });
+
+      mockFindSimilarChunksLateral.mockResolvedValue([
+        {
+          source_chunk_id: 'chunk-0',
+          target_chunk_id: 'chunk-2',
+          source_submission_id: 'sub-1',
+          target_submission_id: 'sub-2',
+          source_content: 'Apple banana cherry is a fruit.',
+          target_content: 'Apple banana cherry is a fruit.',
+          question_index: 0,
+          similarity: 1.0,
+        },
+        {
+          source_chunk_id: 'chunk-1',
+          target_chunk_id: 'chunk-3',
+          source_submission_id: 'sub-1',
+          target_submission_id: 'sub-2',
+          source_content: 'Second essay answer here.',
+          target_content: 'Second essay answer here.',
+          question_index: 1,
+          similarity: 1.0,
+        }
+      ]);
 
       await processDetection('detection-123', '101', 'teacher-1');
 
@@ -106,13 +130,11 @@ describe('plagiarism detection', () => {
       expect(mockQueryLMS).toHaveBeenCalled();
       expect(mockInsertEmbeddings).toHaveBeenCalled();
 
-      // Verify comparison was created with the new matched_chunks format
       expect(mockInsertComparisons).toHaveBeenCalledWith(
         expect.arrayContaining([
           expect.objectContaining({
             source_submission_id: 'sub-1',
             target_submission_id: 'sub-2',
-            // matched_chunks is now { chunks: [...], per_question_scores: [...] }
             matched_chunks: expect.objectContaining({
               per_question_scores: expect.arrayContaining([
                 expect.objectContaining({ question_index: 0 }),
@@ -131,23 +153,30 @@ describe('plagiarism detection', () => {
     });
 
     it('should detect similarity even with moderate cosine (no 0.7 hard gate)', async () => {
-      // Simulate two students with somewhat different embeddings (cosine ~0.65)
-      // that share most of their text (high Jaccard)
       mockQueryLMS.mockResolvedValue([
         { submission_id: 'sub-1', student_id: 'student-A', question_id: 'q-1', answer_text: 'Model bahasa tidak menggunakan kata sebagai unit pemrosesan karena dua masalah utama.' },
         { submission_id: 'sub-2', student_id: 'student-B', question_id: 'q-1', answer_text: 'Model bahasa tidak menggunakan kata sebagai unit pemrosesan karena dua masalah utama.' },
       ]);
 
-      // Vectors that give moderate cosine similarity (~0.65)
-      // vec1 = [1, 0, 0], vec2 = [0.65, 0.76, 0] → cosine ≈ 0.65
       mockGenerateEmbeddingsBatch
         .mockResolvedValueOnce({ vectors: [[1, 0, 0]], totalTokens: 10 })
         .mockResolvedValueOnce({ vectors: [[0.65, 0.76, 0]], totalTokens: 10 });
 
+      mockFindSimilarChunksLateral.mockResolvedValue([
+        {
+          source_chunk_id: 'chunk-0',
+          target_chunk_id: 'chunk-1',
+          source_submission_id: 'sub-1',
+          target_submission_id: 'sub-2',
+          source_content: 'Model bahasa tidak menggunakan kata sebagai unit pemrosesan karena dua masalah utama.',
+          target_content: 'Model bahasa tidak menggunakan kata sebagai unit pemrosesan karena dua masalah utama.',
+          question_index: 0,
+          similarity: 0.65,
+        }
+      ]);
+
       await processDetection('detection-123', '101', 'teacher-1');
 
-      // With the old 0.7 gate, this would NOT create a comparison (semantic=0, combined=0.3*jaccard<0.4)
-      // With the fix, semantic=0.65, combined = 0.7*0.65 + 0.3*1.0 = 0.755 → flagged as MEDIUM+
       expect(mockInsertComparisons).toHaveBeenCalled();
       const comparisonArg = mockInsertComparisons.mock.calls[0][0][0];
       expect(comparisonArg.combined_score).toBeGreaterThan(0.4);

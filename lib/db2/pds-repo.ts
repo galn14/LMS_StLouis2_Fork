@@ -536,3 +536,52 @@ export async function getLatestDetectionForAssignment(assignmentId: string) {
 
   return rows[0] ?? null;
 }
+
+export interface SimilarChunkMatch {
+  source_chunk_id: string;
+  target_chunk_id: string;
+  source_submission_id: string;
+  target_submission_id: string;
+  source_content: string;
+  target_content: string;
+  question_index: number;
+  similarity: number;
+}
+
+export async function findSimilarChunksLateral(submissionIds: string[], limitK: number = 5) {
+  if (submissionIds.length < 2) return [];
+
+  const rows = await queryAux<SimilarChunkMatch>(
+    `
+      SELECT 
+        src.id as source_chunk_id,
+        tgt.id as target_chunk_id,
+        src.submission_id as source_submission_id,
+        tgt.submission_id as target_submission_id,
+        src.content as source_content,
+        tgt.content as target_content,
+        src.question_index,
+        tgt.similarity
+      FROM pds_chunks src
+      JOIN pds_embeddings src_e ON src.id = src_e.chunk_id
+      CROSS JOIN LATERAL (
+        SELECT 
+          t.id, 
+          t.submission_id,
+          t.content,
+          1 - (src_e.vector <=> t_e.vector) as similarity
+        FROM pds_chunks t
+        JOIN pds_embeddings t_e ON t.id = t_e.chunk_id
+        WHERE t.submission_id != src.submission_id
+          AND t.question_index = src.question_index
+          AND t.submission_id = ANY($1::text[])
+        ORDER BY src_e.vector <=> t_e.vector ASC
+        LIMIT $2
+      ) tgt
+      WHERE src.submission_id = ANY($1::text[])
+    `,
+    [submissionIds, limitK]
+  );
+  
+  return rows;
+}

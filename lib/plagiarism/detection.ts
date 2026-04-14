@@ -11,13 +11,18 @@ import {
   insertEmbeddings,
   insertFlags,
   updateDetection,
+  findSimilarChunksLateral,
+  SimilarChunkMatch
 } from '@/lib/db2/pds-repo';
 import {
   calculateCosineSimilarity,
   calculateJaccardSimilarity,
   calculateCombinedScore,
   calculateRiskLevel,
-  SIMILARITY_THRESHOLDS
+  SIMILARITY_THRESHOLDS,
+  BM25Stats,
+  calculateBM25CorpusStats,
+  calculateBM25Similarity
 } from '@/lib/plagiarism/similarity';
 
 // Minimum cosine similarity to show a chunk pair in the evidence panel.
@@ -268,6 +273,35 @@ export async function processDetection(
     }
 
     // Comparison Phase — every unique pair (i < j)
+    const processedSubmissionIds = processedSubmissions.map(s => s.submission_id);
+    const dbMatches = await findSimilarChunksLateral(processedSubmissionIds, 10);
+    
+    // Group dbMatches by submission pair for fast lookup
+    const pairMatches = new Map<string, SimilarChunkMatch[]>();
+    for (const m of dbMatches) {
+       const id1 = m.source_submission_id < m.target_submission_id ? m.source_submission_id : m.target_submission_id;
+       const id2 = m.source_submission_id < m.target_submission_id ? m.target_submission_id : m.source_submission_id;
+       const key = `${id1}:${id2}`;
+       if (!pairMatches.has(key)) pairMatches.set(key, []);
+       pairMatches.get(key)!.push(m);
+    }
+    
+    // Pre-calculate BM25 corpus stats per question
+    const corpusStatsPerQuestion = new Map<number, BM25Stats>();
+    const allQIndices = new Set<number>();
+    for (const sub of processedSubmissions) {
+      if (sub.answerTexts) {
+        for (const qIdx of sub.answerTexts.keys()) allQIndices.add(qIdx);
+      }
+    }
+    for (const qi of allQIndices) {
+      const textsForQ: string[] = [];
+      for (const sub of processedSubmissions) {
+        if (sub.answerTexts?.has(qi)) textsForQ.push(sub.answerTexts.get(qi)!);
+      }
+      corpusStatsPerQuestion.set(qi, calculateBM25CorpusStats(textsForQ));
+    }
+
     const comparisons = [];
     const flags = [];
 
@@ -278,7 +312,13 @@ export async function processDetection(
 
         if (subA.student_id === subB.student_id) continue;
 
-        const result = calculatePairScores(subA, subB);
+        const key = subA.submission_id < subB.submission_id 
+          ? `${subA.submission_id}:${subB.submission_id}` 
+          : `${subB.submission_id}:${subA.submission_id}`;
+          
+        const matchesForPair = pairMatches.get(key) ?? [];
+
+        const result = calculatePairScores(subA, subB, matchesForPair, corpusStatsPerQuestion);
         const riskLevel = calculateRiskLevel(result.combinedScore);
 
         if (result.combinedScore >= SIMILARITY_THRESHOLDS.LOW) {
@@ -344,7 +384,12 @@ export async function processDetection(
  * Evidence chunks use a separate DISPLAY threshold (0.5) that only controls
  * which chunks appear in the side-by-side panel — it never affects scoring.
  */
-function calculatePairScores(subA: SubmissionData, subB: SubmissionData): PairScoreResult {
+function calculatePairScores(
+  subA: SubmissionData,
+  subB: SubmissionData,
+  matchesForPair: SimilarChunkMatch[],
+  corpusStatsPerQuestion: Map<number, BM25Stats>
+): PairScoreResult {
   const chunksA = subA.chunks ?? [];
   const chunksB = subB.chunks ?? [];
   const matchedChunksData: any[] = [];
@@ -380,65 +425,49 @@ function calculatePairScores(subA: SubmissionData, subB: SubmissionData): PairSc
     totalQuestions++;
 
     // ── Semantic: raw cosine best-matches, NO gate ──
-    // For scoring: sum of A→B best-match cosines, normalized by max chunk count.
-    // For evidence: collect bidirectional matches above DISPLAY threshold.
     let sumBestCosine = 0;
-    const evidenceMap = new Map<string, {
-      similarity: number;
-      sourceText: string;
-      targetText: string;
-      sourceChunkId: string;
-      targetChunkId: string;
-    }>();
+    const evidenceMap = new Map<string, any>();
 
-    const tryRegisterEvidence = (simScore: number, cSrc: ChunkData, cTgt: ChunkData) => {
+    const tryRegisterEvidence = (simScore: number, sourceId: string, targetId: string, sourceText: string, targetText: string) => {
       if (simScore <= EVIDENCE_DISPLAY_THRESHOLD) return;
-      const key = `${cSrc.id}:${cTgt.id}`;
+      const key = `${sourceId}:${targetId}`;
       const existing = evidenceMap.get(key);
       if (!existing || simScore > existing.similarity) {
         evidenceMap.set(key, {
           similarity: simScore,
-          sourceText: cSrc.content,
-          targetText: cTgt.content,
-          sourceChunkId: cSrc.id!,
-          targetChunkId: cTgt.id!,
+          sourceText,
+          targetText,
+          sourceChunkId: sourceId,
+          targetChunkId: targetId,
         });
       }
     };
 
-    // A→B: each A chunk finds its best B match (contributes to score)
+    const aToBMatches = matchesForPair.filter(m => m.source_submission_id === subA.submission_id && m.target_submission_id === subB.submission_id && m.question_index === qi);
+    const bToAMatches = matchesForPair.filter(m => m.source_submission_id === subB.submission_id && m.target_submission_id === subA.submission_id && m.question_index === qi);
+
     for (const cA of qChunksA) {
-      if (!cA.embedding) continue;
-      let bestSim = 0;
-      let bestB: ChunkData | null = null;
-      for (const cB of qChunksB) {
-        if (!cB.embedding) continue;
-        const s = calculateCosineSimilarity(cA.embedding, cB.embedding);
-        if (s > bestSim) { bestSim = s; bestB = cB; }
+      const m = aToBMatches.find(x => x.source_chunk_id === cA.id);
+      if (m) {
+        sumBestCosine += m.similarity;
+        tryRegisterEvidence(m.similarity, cA.id!, m.target_chunk_id, cA.content, m.target_content);
       }
-      sumBestCosine += bestSim;
-      if (bestB) tryRegisterEvidence(bestSim, cA, bestB);
     }
 
-    // B→A: for evidence collection only (catches asymmetric display matches)
     for (const cB of qChunksB) {
-      if (!cB.embedding) continue;
-      let bestSim = 0;
-      let bestA: ChunkData | null = null;
-      for (const cA of qChunksA) {
-        if (!cA.embedding) continue;
-        const s = calculateCosineSimilarity(cB.embedding, cA.embedding);
-        if (s > bestSim) { bestSim = s; bestA = cA; }
+      const m = bToAMatches.find(x => x.source_chunk_id === cB.id);
+      if (m) {
+        tryRegisterEvidence(m.similarity, m.target_chunk_id, cB.id!, m.target_content, cB.content);
       }
-      if (bestA) tryRegisterEvidence(bestSim, bestA, cB);
     }
 
     const semanticQ = sumBestCosine / Math.max(qChunksA.length, qChunksB.length);
 
-    // ── Lexical: per-question Jaccard (not the full concatenated text) ──
+    // ── Lexical: BM25 on per-question answer text ──
     const textA = subA.answerTexts?.get(qi) ?? '';
     const textB = subB.answerTexts?.get(qi) ?? '';
-    const lexicalQ = calculateJaccardSimilarity(textA, textB);
+    const stats = corpusStatsPerQuestion.get(qi);
+    const lexicalQ = stats ? calculateBM25Similarity(textA, textB, stats) : 0;
 
     // ── Combined per-question ──
     const combinedQ = calculateCombinedScore(semanticQ, lexicalQ);
@@ -454,7 +483,6 @@ function calculatePairScores(subA: SubmissionData, subB: SubmissionData): PairSc
     totalLexicalSum += lexicalQ;
     totalCombinedSum += combinedQ;
 
-    // Collect evidence for this question
     for (const [, m] of evidenceMap) {
       matchedChunksData.push({
         source_chunk_id: m.sourceChunkId,

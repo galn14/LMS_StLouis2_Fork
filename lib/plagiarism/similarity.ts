@@ -78,6 +78,92 @@ export function tokenizeForJaccard(text: string): Set<string> {
 }
 
 /**
+ * Tokenizes text for BM25 similarity (returns array to preserve frequencies).
+ */
+export function tokenizeForLexical(text: string): string[] {
+  const normalized = text.toLowerCase().replace(/[^\w\s]/g, '');
+  const words = normalized.split(/\s+/);
+  return words.filter(word => word.length >= 3 && !STOPWORDS.has(word));
+}
+
+export interface BM25Stats {
+  idf: Map<string, number>;
+  avgdl: number;
+}
+
+/**
+ * Calculates corpus statistics (IDF and average document length) required for BM25.
+ */
+export function calculateBM25CorpusStats(texts: string[]): BM25Stats {
+  const docFreq = new Map<string, number>();
+  let totalTokens = 0;
+  const N = texts.length;
+
+  if (N === 0) return { idf: new Map(), avgdl: 0 };
+
+  for (const text of texts) {
+    const tokens = tokenizeForLexical(text);
+    totalTokens += tokens.length;
+    const uniqueTokens = new Set(tokens);
+    for (const token of uniqueTokens) {
+      docFreq.set(token, (docFreq.get(token) || 0) + 1);
+    }
+  }
+
+  const idf = new Map<string, number>();
+  for (const [token, df] of docFreq.entries()) {
+    // Standard BM25 IDF formula
+    const idfVal = Math.log(1 + (N - df + 0.5) / (df + 0.5));
+    idf.set(token, idfVal);
+  }
+
+  return { idf, avgdl: totalTokens / N };
+}
+
+function computeRawBM25(queryTokens: string[], docTokens: string[], stats: BM25Stats): number {
+  if (stats.avgdl === 0 || docTokens.length === 0 || queryTokens.length === 0) return 0;
+  
+  const k1 = 1.2;
+  const b = 0.75;
+  const dl = docTokens.length;
+
+  const docFreq = new Map<string, number>();
+  for (const token of docTokens) docFreq.set(token, (docFreq.get(token) || 0) + 1);
+
+  let score = 0;
+  const uniqueQueryTokens = new Set(queryTokens);
+  
+  for (const qToken of uniqueQueryTokens) {
+    const freq = docFreq.get(qToken);
+    if (!freq) continue;
+    const idf = stats.idf.get(qToken) ?? 0;
+    const numerator = freq * (k1 + 1);
+    const denominator = freq + k1 * (1 - b + b * (dl / stats.avgdl));
+    score += idf * (numerator / denominator);
+  }
+
+  return score;
+}
+
+/**
+ * Calculates a normalized, symmetric BM25 similarity between two texts.
+ */
+export function calculateBM25Similarity(textA: string, textB: string, stats: BM25Stats): number {
+  const tokensA = tokenizeForLexical(textA);
+  const tokensB = tokenizeForLexical(textB);
+
+  const scoreAB = computeRawBM25(tokensA, tokensB, stats);
+  const scoreAA = computeRawBM25(tokensA, tokensA, stats);
+  const scoreBA = computeRawBM25(tokensB, tokensA, stats);
+  const scoreBB = computeRawBM25(tokensB, tokensB, stats);
+
+  if (scoreAA === 0 || scoreBB === 0) return 0;
+
+  const normalized = (scoreAB / scoreAA + scoreBA / scoreBB) / 2;
+  return Math.min(Math.max(normalized, 0), 1);
+}
+
+/**
  * Calculates the Jaccard similarity between two texts.
  * Formula: |Intersection| / |Union|
  * 
@@ -106,15 +192,33 @@ export function calculateJaccardSimilarity(textA: string, textB: string): number
 }
 
 /**
- * Calculates the combined similarity score.
- * Formula: 0.7 * Semantic + 0.3 * Lexical
- * 
+ * Calculates the combined similarity score using a weighted average.
+ * Formula: 0.3 * Semantic + 0.7 * Lexical
+ *
+ * Lexical (BM25) is the primary signal — shared specific words is the real
+ * evidence of copying. Semantic confirms the meaning is related but alone
+ * cannot distinguish "two students who understood the material" from copying.
+ *
+ * With these weights, paraphrased text (high semantic ~0.78, low lexical ~0.15)
+ * scores ~0.34 (NONE), while exact copies (both ~1.0) score ~1.0 (HIGH).
+ *
+ * A soft gate (0.3) penalizes pairs with extremely low semantic overlap,
+ * preventing pure keyword-stuffing from producing a false positive.
+ *
  * @param semanticScore - Cosine similarity score (0-1)
- * @param lexicalScore - Jaccard similarity score (0-1)
+ * @param lexicalScore - BM25 similarity score (0-1)
  * @returns Combined score (0-1)
  */
 export function calculateCombinedScore(semanticScore: number, lexicalScore: number): number {
-  return (0.7 * semanticScore) + (0.3 * lexicalScore);
+  const SOFT_GATE = 0.3;
+
+  // If semantic is extremely low, halve its contribution to reduce noise.
+  const weightedSemantic = semanticScore < SOFT_GATE ? semanticScore * 0.5 : semanticScore;
+
+  // Weighting: 30% Semantic (meaning), 70% Lexical (specific word choice)
+  const score = (0.3 * weightedSemantic) + (0.7 * lexicalScore);
+
+  return Number.isNaN(score) ? 0 : Math.min(score, 1);
 }
 
 /**
