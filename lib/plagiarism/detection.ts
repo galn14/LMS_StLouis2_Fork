@@ -15,15 +15,21 @@ import {
   SimilarChunkMatch
 } from '@/lib/db2/pds-repo';
 import {
-  calculateCosineSimilarity,
-  calculateJaccardSimilarity,
   calculateCombinedScore,
   calculateRiskLevel,
   SIMILARITY_THRESHOLDS,
   BM25Stats,
   calculateBM25CorpusStats,
-  calculateBM25Similarity
+  calculateBM25Similarity,
+  calculateDistributionStats,
+  calculateZScore,
+  zScoreToNormalizedScore,
 } from '@/lib/plagiarism/similarity';
+
+// Minimum pair count to enable z-score (relative) scoring.
+// Below this, we fall back to the fixed weighted formula.
+// ~15 pairs corresponds to 6 submissions.
+const MIN_PAIRS_FOR_ZSCORE = 15;
 
 // Minimum cosine similarity to show a chunk pair in the evidence panel.
 // This is a DISPLAY threshold — it does NOT affect scoring.
@@ -77,6 +83,24 @@ interface PairScoreResult {
   lexicalScore: number;
   perQuestionScores: PerQuestionScore[];
   matchedChunksData: any[];
+}
+
+interface PerQuestionRawScore {
+  question_index: number;
+  semantic_score: number;
+  lexical_score: number;
+}
+
+interface PairRawResult {
+  perQuestionRaw: PerQuestionRawScore[];
+  matchedChunksData: any[];
+}
+
+interface QuestionDistribution {
+  semanticMean: number;
+  semanticStd: number;
+  lexicalMean: number;
+  lexicalStd: number;
 }
 
 /**
@@ -302,9 +326,8 @@ export async function processDetection(
       corpusStatsPerQuestion.set(qi, calculateBM25CorpusStats(textsForQ));
     }
 
-    const comparisons = [];
-    const flags = [];
-
+    // First pass: compute raw per-question scores for every unique pair.
+    const rawPairs: Array<{ subA: SubmissionData; subB: SubmissionData; raw: PairRawResult }> = [];
     for (let i = 0; i < processedSubmissions.length; i++) {
       for (let j = i + 1; j < processedSubmissions.length; j++) {
         const subA = processedSubmissions[i];
@@ -312,35 +335,53 @@ export async function processDetection(
 
         if (subA.student_id === subB.student_id) continue;
 
-        const key = subA.submission_id < subB.submission_id 
-          ? `${subA.submission_id}:${subB.submission_id}` 
+        const key = subA.submission_id < subB.submission_id
+          ? `${subA.submission_id}:${subB.submission_id}`
           : `${subB.submission_id}:${subA.submission_id}`;
-          
+
         const matchesForPair = pairMatches.get(key) ?? [];
+        const raw = calculatePairRawScores(subA, subB, matchesForPair, corpusStatsPerQuestion);
+        rawPairs.push({ subA, subB, raw });
+      }
+    }
 
-        const result = calculatePairScores(subA, subB, matchesForPair, corpusStatsPerQuestion);
-        const riskLevel = calculateRiskLevel(result.combinedScore);
+    // Compute per-question distribution stats if we have enough pairs.
+    // Below MIN_PAIRS_FOR_ZSCORE the class size is too small for std to be
+    // meaningful — fall back to the fixed weighted formula.
+    const useZScore = rawPairs.length >= MIN_PAIRS_FOR_ZSCORE;
+    const distributions = useZScore
+      ? computeQuestionDistributions(rawPairs.map(p => p.raw))
+      : null;
 
-        if (result.combinedScore >= SIMILARITY_THRESHOLDS.LOW) {
-          const comparisonId = crypto.randomUUID();
-          comparisons.push({
-            id: comparisonId,
-            source_submission_id: subA.submission_id,
-            target_submission_id: subB.submission_id,
-            semantic_score: result.semanticScore,
-            lexical_score: result.lexicalScore,
-            combined_score: result.combinedScore,
-            risk_level: riskLevel,
-            matched_chunks: {
-              chunks: result.matchedChunksData,
-              per_question_scores: result.perQuestionScores,
-            },
-            compared_at: new Date().toISOString(),
-          });
+    console.log(`[PDS] Scoring ${rawPairs.length} pairs using ${useZScore ? 'z-score (relative)' : 'weighted (fallback)'} mode`);
 
-          flags.push({ comparison_id: comparisonId, submission_id: subA.submission_id, status: 'pending', is_false_positive: false });
-          flags.push({ comparison_id: comparisonId, submission_id: subB.submission_id, status: 'pending', is_false_positive: false });
-        }
+    // Second pass: finalize each pair's combined score and filter by threshold.
+    const comparisons = [];
+    const flags = [];
+
+    for (const { subA, subB, raw } of rawPairs) {
+      const result = finalizePairScore(raw, distributions);
+      const riskLevel = calculateRiskLevel(result.combinedScore);
+
+      if (result.combinedScore >= SIMILARITY_THRESHOLDS.LOW) {
+        const comparisonId = crypto.randomUUID();
+        comparisons.push({
+          id: comparisonId,
+          source_submission_id: subA.submission_id,
+          target_submission_id: subB.submission_id,
+          semantic_score: result.semanticScore,
+          lexical_score: result.lexicalScore,
+          combined_score: result.combinedScore,
+          risk_level: riskLevel,
+          matched_chunks: {
+            chunks: result.matchedChunksData,
+            per_question_scores: result.perQuestionScores,
+          },
+          compared_at: new Date().toISOString(),
+        });
+
+        flags.push({ comparison_id: comparisonId, submission_id: subA.submission_id, status: 'pending', is_false_positive: false });
+        flags.push({ comparison_id: comparisonId, submission_id: subB.submission_id, status: 'pending', is_false_positive: false });
       }
     }
 
@@ -371,35 +412,33 @@ export async function processDetection(
 }
 
 /**
- * Per-question pair scoring.
+ * First pass: compute raw per-question semantic and lexical scores for a pair.
+ * No combining or thresholding yet — that happens in finalizePairScore once
+ * the class-wide distribution stats are known.
  *
  * For each shared question:
- * 1. Semantic: raw best-match cosine (NO hard threshold gate).
- *    The cosine similarity always contributes to the score, even at 0.5–0.7.
- * 2. Lexical: Jaccard on per-question answer text (not the full concatenated text).
- * 3. Combined: 0.7×semantic + 0.3×lexical, per question.
- *
- * Overall = average of per-question combined scores.
+ * 1. Semantic: sum of best-match cosines (from DB LATERAL join), normalized
+ *    by the larger chunk count. Pure raw signal — no gate.
+ * 2. Lexical: BM25 on per-question answer text.
  *
  * Evidence chunks use a separate DISPLAY threshold (0.5) that only controls
  * which chunks appear in the side-by-side panel — it never affects scoring.
  */
-function calculatePairScores(
+function calculatePairRawScores(
   subA: SubmissionData,
   subB: SubmissionData,
   matchesForPair: SimilarChunkMatch[],
   corpusStatsPerQuestion: Map<number, BM25Stats>
-): PairScoreResult {
+): PairRawResult {
   const chunksA = subA.chunks ?? [];
   const chunksB = subB.chunks ?? [];
   const matchedChunksData: any[] = [];
-  const perQuestionScores: PerQuestionScore[] = [];
+  const perQuestionRaw: PerQuestionRawScore[] = [];
 
   if (chunksA.length === 0 || chunksB.length === 0) {
-    return { combinedScore: 0, semanticScore: 0, lexicalScore: 0, perQuestionScores: [], matchedChunksData: [] };
+    return { perQuestionRaw: [], matchedChunksData: [] };
   }
 
-  // Group chunks by question_index
   const groupA = new Map<number, ChunkData[]>();
   const groupB = new Map<number, ChunkData[]>();
   for (const c of chunksA) {
@@ -412,19 +451,12 @@ function calculatePairScores(
   }
 
   const allQIs = new Set([...groupA.keys(), ...groupB.keys()]);
-  let totalSemanticSum = 0;
-  let totalLexicalSum = 0;
-  let totalCombinedSum = 0;
-  let totalQuestions = 0;
 
   for (const qi of allQIs) {
     const qChunksA = groupA.get(qi) ?? [];
     const qChunksB = groupB.get(qi) ?? [];
     if (qChunksA.length === 0 || qChunksB.length === 0) continue;
 
-    totalQuestions++;
-
-    // ── Semantic: raw cosine best-matches, NO gate ──
     let sumBestCosine = 0;
     const evidenceMap = new Map<string, any>();
 
@@ -463,25 +495,16 @@ function calculatePairScores(
 
     const semanticQ = sumBestCosine / Math.max(qChunksA.length, qChunksB.length);
 
-    // ── Lexical: BM25 on per-question answer text ──
     const textA = subA.answerTexts?.get(qi) ?? '';
     const textB = subB.answerTexts?.get(qi) ?? '';
     const stats = corpusStatsPerQuestion.get(qi);
     const lexicalQ = stats ? calculateBM25Similarity(textA, textB, stats) : 0;
 
-    // ── Combined per-question ──
-    const combinedQ = calculateCombinedScore(semanticQ, lexicalQ);
-
-    perQuestionScores.push({
+    perQuestionRaw.push({
       question_index: qi,
-      semantic_score: Math.round(semanticQ * 10000) / 10000,
-      lexical_score: Math.round(lexicalQ * 10000) / 10000,
-      combined_score: Math.round(combinedQ * 10000) / 10000,
+      semantic_score: semanticQ,
+      lexical_score: lexicalQ,
     });
-
-    totalSemanticSum += semanticQ;
-    totalLexicalSum += lexicalQ;
-    totalCombinedSum += combinedQ;
 
     for (const [, m] of evidenceMap) {
       matchedChunksData.push({
@@ -495,9 +518,104 @@ function calculatePairScores(
     }
   }
 
+  return { perQuestionRaw, matchedChunksData };
+}
+
+/**
+ * Aggregates per-question distribution stats (mean, std) of semantic and
+ * lexical scores across ALL pairs. These stats answer the question: "what
+ * does the baseline similarity look like for this specific question?"
+ *
+ * A question with a constrained answer space (e.g. "what is tokenization")
+ * will naturally have a high semantic mean — so being "0.75 similar" on that
+ * question is unremarkable. An open-ended question with a low mean makes the
+ * same 0.75 a strong outlier signal.
+ */
+function computeQuestionDistributions(
+  allRawResults: PairRawResult[]
+): Map<number, QuestionDistribution> {
+  const byQuestion = new Map<number, { sems: number[]; lexs: number[] }>();
+
+  for (const raw of allRawResults) {
+    for (const q of raw.perQuestionRaw) {
+      if (!byQuestion.has(q.question_index)) {
+        byQuestion.set(q.question_index, { sems: [], lexs: [] });
+      }
+      const bucket = byQuestion.get(q.question_index)!;
+      bucket.sems.push(q.semantic_score);
+      bucket.lexs.push(q.lexical_score);
+    }
+  }
+
+  const distributions = new Map<number, QuestionDistribution>();
+  for (const [qi, { sems, lexs }] of byQuestion) {
+    const semStats = calculateDistributionStats(sems);
+    const lexStats = calculateDistributionStats(lexs);
+    distributions.set(qi, {
+      semanticMean: semStats.mean,
+      semanticStd: semStats.std,
+      lexicalMean: lexStats.mean,
+      lexicalStd: lexStats.std,
+    });
+  }
+  return distributions;
+}
+
+/**
+ * Second pass: combine raw per-question scores into a final PairScoreResult.
+ *
+ * Z-score mode (distributions provided):
+ *   For each question, compute how many standard deviations this pair's
+ *   semantic and lexical scores are above the class mean on that question.
+ *   The per-question combined score = normalize(max(z_sem, z_lex)).
+ *   This flags a pair only if their similarity is unusual relative to how
+ *   similar other pairs are on the same question.
+ *
+ * Fallback mode (distributions null, small sample):
+ *   Uses the fixed weighted formula from calculateCombinedScore.
+ *
+ * The overall combinedScore is the mean of per-question combined scores.
+ * The pair's display semanticScore and lexicalScore are raw averages (not
+ * z-scores) so the UI shows interpretable numbers.
+ */
+function finalizePairScore(
+  raw: PairRawResult,
+  distributions: Map<number, QuestionDistribution> | null
+): PairScoreResult {
+  const perQuestionScores: PerQuestionScore[] = [];
+  let totalSemanticSum = 0;
+  let totalLexicalSum = 0;
+  let totalCombinedSum = 0;
+  let totalQuestions = 0;
+
+  for (const q of raw.perQuestionRaw) {
+    totalQuestions++;
+
+    let combinedQ: number;
+    const dist = distributions?.get(q.question_index);
+    if (dist) {
+      const zSem = calculateZScore(q.semantic_score, dist.semanticMean, dist.semanticStd);
+      const zLex = calculateZScore(q.lexical_score, dist.lexicalMean, dist.lexicalStd);
+      combinedQ = zScoreToNormalizedScore(Math.max(zSem, zLex));
+    } else {
+      combinedQ = calculateCombinedScore(q.semantic_score, q.lexical_score);
+    }
+
+    perQuestionScores.push({
+      question_index: q.question_index,
+      semantic_score: Math.round(q.semantic_score * 10000) / 10000,
+      lexical_score: Math.round(q.lexical_score * 10000) / 10000,
+      combined_score: Math.round(combinedQ * 10000) / 10000,
+    });
+
+    totalSemanticSum += q.semantic_score;
+    totalLexicalSum += q.lexical_score;
+    totalCombinedSum += combinedQ;
+  }
+
   const semanticScore = totalQuestions > 0 ? totalSemanticSum / totalQuestions : 0;
   const lexicalScore = totalQuestions > 0 ? totalLexicalSum / totalQuestions : 0;
   const combinedScore = totalQuestions > 0 ? totalCombinedSum / totalQuestions : 0;
 
-  return { combinedScore, semanticScore, lexicalScore, perQuestionScores, matchedChunksData };
+  return { combinedScore, semanticScore, lexicalScore, perQuestionScores, matchedChunksData: raw.matchedChunksData };
 }

@@ -6,7 +6,10 @@ import {
   calculateBM25CorpusStats,
   calculateBM25Similarity,
   tokenizeForLexical,
-  tokenizeForJaccard
+  tokenizeForJaccard,
+  calculateDistributionStats,
+  calculateZScore,
+  zScoreToNormalizedScore,
 } from '@/lib/plagiarism/similarity';
 
 describe('Similarity Calculations', () => {
@@ -121,17 +124,68 @@ describe('Similarity Calculations', () => {
     });
   });
 
-  describe('Combined Score (Gated Geometric Mean)', () => {
-    it('should calculate combined score correctly when semantic is above gate', () => {
-      expect(calculateCombinedScore(0.8, 0.5)).toBeCloseTo(0.632, 2);
+  describe('Combined Score (fallback: 0.55 semantic + 0.45 lexical)', () => {
+    it('should compute weighted average above soft gate', () => {
+      // semantic=0.8 > 0.3 → weighted=0.8; 0.55*0.8 + 0.45*0.5 = 0.665
+      expect(calculateCombinedScore(0.8, 0.5)).toBeCloseTo(0.665, 3);
     });
 
-    it('should return 0 when semantic score is below the 0.5 gate', () => {
-      expect(calculateCombinedScore(0.49, 1.0)).toBe(0);
+    it('should apply soft-gate penalty when semantic is below 0.3', () => {
+      // semantic=0.2 < 0.3 → weighted=0.1; 0.55*0.1 + 0.45*0.8 = 0.415
+      expect(calculateCombinedScore(0.2, 0.8)).toBeCloseTo(0.415, 3);
     });
 
-    it('should return 0 if one of the scores is 0 (and semantic > 0.5)', () => {
-      expect(calculateCombinedScore(0.6, 0.0)).toBe(0);
+    it('should not return 0 when lexical is 0 (semantic still contributes)', () => {
+      // 0.55 * 0.6 + 0.45 * 0 = 0.33
+      expect(calculateCombinedScore(0.6, 0.0)).toBeCloseTo(0.33, 3);
+    });
+
+    it('should clamp final score to [0, 1]', () => {
+      expect(calculateCombinedScore(1.0, 1.0)).toBeLessThanOrEqual(1);
+      expect(calculateCombinedScore(0.0, 0.0)).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  describe('Distribution Stats', () => {
+    it('should compute mean and sample std correctly', () => {
+      const { mean, std } = calculateDistributionStats([2, 4, 4, 4, 5, 5, 7, 9]);
+      expect(mean).toBeCloseTo(5.0, 2);
+      // Sample std (Bessel): sqrt(32/7) ≈ 2.138
+      expect(std).toBeCloseTo(2.138, 2);
+    });
+
+    it('should return zero std for single-element arrays', () => {
+      const { mean, std } = calculateDistributionStats([0.5]);
+      expect(mean).toBe(0.5);
+      expect(std).toBe(0);
+    });
+
+    it('should return zero for empty arrays', () => {
+      const { mean, std } = calculateDistributionStats([]);
+      expect(mean).toBe(0);
+      expect(std).toBe(0);
+    });
+  });
+
+  describe('Z-Score Normalization', () => {
+    it('should compute z-score as (value - mean) / std', () => {
+      expect(calculateZScore(0.8, 0.5, 0.1)).toBeCloseTo(3.0, 2);
+      expect(calculateZScore(0.5, 0.5, 0.1)).toBeCloseTo(0.0, 2);
+      expect(calculateZScore(0.4, 0.5, 0.1)).toBeCloseTo(-1.0, 2);
+    });
+
+    it('should return 0 when std is 0 (no discrimination)', () => {
+      expect(calculateZScore(0.8, 0.5, 0)).toBe(0);
+    });
+
+    it('should map z-score to [0,1] via linear clamp at z=3', () => {
+      expect(zScoreToNormalizedScore(0)).toBe(0);
+      expect(zScoreToNormalizedScore(-1)).toBe(0); // clamped to 0
+      expect(zScoreToNormalizedScore(1.2)).toBeCloseTo(0.4, 2); // LOW threshold
+      expect(zScoreToNormalizedScore(1.8)).toBeCloseTo(0.6, 2); // MEDIUM threshold
+      expect(zScoreToNormalizedScore(2.4)).toBeCloseTo(0.8, 2); // HIGH threshold
+      expect(zScoreToNormalizedScore(3)).toBe(1);
+      expect(zScoreToNormalizedScore(5)).toBe(1); // clamped to 1
     });
   });
 

@@ -645,14 +645,14 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                 {/* Clean group */}
                 {cleanStudents.length > 0 && (
                   <div>
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-2 mb-3">
                       <FaCheckCircle className="text-green-500" />
                       <h3 className="font-semibold text-green-700">No Issues Found</h3>
                     </div>
-                    <div className="bg-green-50 border border-green-200 rounded-xl p-3">
-                      <p className="text-sm text-green-700">
-                        {cleanStudents.map(s => s.student_name).join(', ')}
-                      </p>
+                    <div className="space-y-2">
+                      {cleanStudents.sort((a, b) => b.max_similarity - a.max_similarity).map(s => (
+                        <StudentResultRow key={s.submission_id} student={s} onClick={() => openStudentMatches(s)} />
+                      ))}
                     </div>
                   </div>
                 )}
@@ -757,24 +757,35 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
 function StudentResultRow({ student, onClick }: { student: StudentResult; onClick: () => void }) {
   const pct = Math.round(student.max_similarity * 100);
   const isHigh = student.high_risk_count > 0;
+  const isMedium = !isHigh && student.medium_risk_count > 0;
+
+  const styles = isHigh
+    ? { row: 'bg-red-50 border-red-200 hover:border-red-400', circle: 'bg-red-100 text-red-700' }
+    : isMedium
+    ? { row: 'bg-orange-50 border-orange-200 hover:border-orange-400', circle: 'bg-orange-100 text-orange-700' }
+    : { row: 'bg-green-50 border-green-200 hover:border-green-400', circle: 'bg-green-100 text-green-700' };
+
+  const cleanDetail = student.low_risk_count > 0
+    ? `${student.low_risk_count} minor overlap${student.low_risk_count > 1 ? 's' : ''} — highest ${pct}%`
+    : 'No similar content found';
 
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left border rounded-xl p-4 hover:shadow-sm transition-all flex items-center justify-between group
-        ${isHigh ? 'bg-red-50 border-red-200 hover:border-red-400' : 'bg-orange-50 border-orange-200 hover:border-orange-400'}`}
+      className={`w-full text-left border rounded-xl p-4 hover:shadow-sm transition-all flex items-center justify-between group ${styles.row}`}
     >
       <div className="flex items-center gap-3">
-        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0
-          ${isHigh ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}`}>
+        <div className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${styles.circle}`}>
           {pct}%
         </div>
         <div>
           <p className="font-semibold text-gray-800">{student.student_name}</p>
           <p className="text-xs text-gray-500 mt-0.5">
-            {student.high_risk_count > 0 && `${student.high_risk_count} high-similarity match${student.high_risk_count > 1 ? 'es' : ''}`}
-            {student.high_risk_count > 0 && student.medium_risk_count > 0 && ' · '}
-            {student.medium_risk_count > 0 && `${student.medium_risk_count} medium match${student.medium_risk_count > 1 ? 'es' : ''}`}
+            {isHigh && `${student.high_risk_count} high-similarity match${student.high_risk_count > 1 ? 'es' : ''}`}
+            {isHigh && student.medium_risk_count > 0 && ' · '}
+            {isHigh && student.medium_risk_count > 0 && `${student.medium_risk_count} medium match${student.medium_risk_count > 1 ? 'es' : ''}`}
+            {isMedium && `${student.medium_risk_count} medium-similarity match${student.medium_risk_count > 1 ? 'es' : ''}`}
+            {!isHigh && !isMedium && cleanDetail}
           </p>
         </div>
       </div>

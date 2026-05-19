@@ -216,14 +216,14 @@ export function calculateCombinedScore(semanticScore: number, lexicalScore: numb
   const weightedSemantic = semanticScore < SOFT_GATE ? semanticScore * 0.5 : semanticScore;
 
   // Weighting: 30% Semantic (meaning), 70% Lexical (specific word choice)
-  const score = (0.3 * weightedSemantic) + (0.7 * lexicalScore);
+  const score = (0.55 * weightedSemantic) + (0.45 * lexicalScore);
 
   return Number.isNaN(score) ? 0 : Math.min(score, 1);
 }
 
 /**
  * Determines the risk level based on the combined score.
- * 
+ *
  * @param score - Combined similarity score (0-1)
  * @returns Risk Level string ('HIGH', 'MEDIUM', 'LOW', 'NONE')
  */
@@ -232,4 +232,47 @@ export function calculateRiskLevel(score: number): RiskLevel {
   if (score >= SIMILARITY_THRESHOLDS.MEDIUM) return 'MEDIUM';
   if (score >= SIMILARITY_THRESHOLDS.LOW) return 'LOW';
   return 'NONE';
+}
+
+/**
+ * Calculates mean and sample standard deviation of a numeric array.
+ * Uses Bessel's correction (n-1) for unbiased sample std.
+ */
+export function calculateDistributionStats(values: number[]): { mean: number; std: number } {
+  const n = values.length;
+  if (n === 0) return { mean: 0, std: 0 };
+
+  const mean = values.reduce((sum, v) => sum + v, 0) / n;
+  if (n < 2) return { mean, std: 0 };
+
+  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (n - 1);
+  return { mean, std: Math.sqrt(variance) };
+}
+
+/**
+ * Z-score: how many standard deviations above the mean is this value.
+ * Returns 0 if std is 0 (all samples identical — no discrimination possible).
+ */
+export function calculateZScore(value: number, mean: number, std: number): number {
+  if (std === 0) return 0;
+  return (value - mean) / std;
+}
+
+/**
+ * Maps a z-score to a normalized plagiarism score in [0, 1].
+ *
+ * Mapping (linear clamp, z/3):
+ *   z ≤ 0   → 0.00  (at or below average)
+ *   z = 1.2 → 0.40  (LOW threshold)
+ *   z = 1.8 → 0.60  (MEDIUM threshold)
+ *   z = 2.4 → 0.80  (HIGH threshold)
+ *   z ≥ 3   → 1.00  (extreme outlier)
+ *
+ * The thresholds map naturally to SIMILARITY_THRESHOLDS:
+ *   - A pair must be >1.2σ above the class mean to be flagged at all.
+ *   - Exact copies are typically 2.5-3σ+ outliers → HIGH.
+ */
+export function zScoreToNormalizedScore(z: number): number {
+  if (z <= 0) return 0;
+  return Math.min(z / 3, 1);
 }
