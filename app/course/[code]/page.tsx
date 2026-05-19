@@ -86,7 +86,7 @@ const CourseDetail = () => {
           <div className="flex items-center justify-center h-96">
             <div className="text-center">
               <h2 className="text-xl font-semibold text-gray-900 mb-2">Course Not Found</h2>
-              <p className="text-gray-600 mb-4">The course you're looking for doesn't exist.</p>
+              <p className="text-gray-600 mb-4">The course you&apos;re looking for doesn&apos;t exist.</p>
               <Link
                 href="/course"
                 className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors"
