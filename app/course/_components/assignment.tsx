@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import { AssignmentProvider } from '@/lib/contexts/AssignmentContext';
 import AssignmentCreateModal from './assignment/assignment-create-modal';
@@ -17,9 +17,10 @@ import { filterAssignments } from '../../../lib/assignmentUtils';
 interface AssignmentTabProps {
   courseCode: string;
   sessionId: number;
+  initialAssignmentId?: number | null;
 }
 
-export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabProps) {
+export default function AssignmentTab({ courseCode, sessionId, initialAssignmentId }: AssignmentTabProps) {
   const { data: session } = useSession();
 
   const [viewMode, setViewMode] = useState<'all' | 'by-session'>('all');
@@ -38,6 +39,21 @@ export default function AssignmentTab({ courseCode, sessionId }: AssignmentTabPr
   const isTeacher = session?.user?.role?.toUpperCase() === 'TEACHER' || session?.user?.role?.toUpperCase() === 'GURU';
   const currentUserId = session?.user?.id ? parseInt(session.user.id) : null;
   const filteredAssignments = filterAssignments(assignments, isTeacher);
+
+  // Deep-link: when navigating in with ?assignmentId=N, auto-open that assignment's detail.
+  // Only fire once per id, after assignments load.
+  const openedDeepLinkRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!initialAssignmentId) return;
+    if (loading) return;
+    if (openedDeepLinkRef.current === initialAssignmentId) return;
+    const target = assignments.find(a => a.id === initialAssignmentId);
+    if (target) {
+      setSelectedAssignment(target);
+      setShowDetailModal(true);
+      openedDeepLinkRef.current = initialAssignmentId;
+    }
+  }, [initialAssignmentId, assignments, loading]);
 
   const handleAssignmentClick = (assignment: Assignment) => {
     setSelectedAssignment(assignment);

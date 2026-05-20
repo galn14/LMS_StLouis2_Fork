@@ -21,6 +21,7 @@ const CourseDetail = () => {
   // Get sessionId and tab from URL search params
   const sessionIdParam = searchParams.get('sessionId');
   const tabParam = searchParams.get('tab');
+  const assignmentIdParam = searchParams.get('assignmentId');
   const [course, setCourse] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('Session');
@@ -177,7 +178,11 @@ const CourseDetail = () => {
             )}
             {activeTab === 'Assignment' && (
               <div className="bg-white rounded-lg shadow-sm p-6">
-                <AssignmentTab courseCode={code as string} sessionId={activeSession} />
+                <AssignmentTab
+                  courseCode={code as string}
+                  sessionId={activeSession}
+                  initialAssignmentId={assignmentIdParam ? parseInt(assignmentIdParam) : null}
+                />
               </div>
             )}
             {activeTab === 'Scoring' && (

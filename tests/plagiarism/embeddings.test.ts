@@ -1,17 +1,19 @@
 
 import { generateEmbedding, generateEmbeddingsBatch } from '@/lib/plagiarism/embeddings';
-import { openai } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
+
+const mockEmbeddingsCreate = jest.fn();
 
 jest.mock('@/lib/openai', () => ({
-  openai: {
-    embeddings: {
-      create: jest.fn(),
-    },
-  },
+  getOpenAI: jest.fn(),
 }));
 
+(getOpenAI as jest.Mock).mockResolvedValue({
+  embeddings: { create: mockEmbeddingsCreate },
+});
+
 describe('generateEmbedding', () => {
-  const mockCreate = openai.embeddings.create as jest.Mock;
+  const mockCreate = mockEmbeddingsCreate;
 
   beforeEach(() => {
     mockCreate.mockClear();
@@ -105,7 +107,7 @@ describe('generateEmbedding', () => {
 });
 
 describe('generateEmbeddingsBatch', () => {
-    const mockCreate = openai.embeddings.create as jest.Mock;
+    const mockCreate = mockEmbeddingsCreate;
 
     beforeEach(() => {
         mockCreate.mockClear();

@@ -1,5 +1,5 @@
 
-import { openai } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
 import { insertEmbedding } from '@/lib/db2/pds-repo';
 
 const EMBEDDING_MODEL = 'text-embedding-3-small';
@@ -26,7 +26,8 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
  */
 export async function generateEmbedding(text: string): Promise<EmbeddingResult> {
   let attempt = 0;
-  
+  const openai = await getOpenAI();
+
   while (attempt < MAX_RETRIES) {
     try {
       const cleanText = text.replace(/\n/g, ' ');
@@ -74,6 +75,7 @@ export async function generateEmbedding(text: string): Promise<EmbeddingResult> 
  */
 export async function generateEmbeddingsBatch(texts: string[]): Promise<{ vectors: number[][], totalTokens: number }> {
   let attempt = 0;
+  const openai = await getOpenAI();
 
   while (attempt < MAX_RETRIES) {
     try {

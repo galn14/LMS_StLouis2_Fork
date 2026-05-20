@@ -1,13 +1,8 @@
-import { openai } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
 import { insertGradingResult, insertTokenUsage } from '@/lib/db2/acs-repo';
+import { getEffectiveAiConfig } from '@/lib/ai-config';
+import { logAudit } from '@/lib/audit';
 import { GradingResult, Rubric } from '@/lib/types';
-import fs from 'fs';
-import path from 'path';
-
-const systemPrompt = fs.readFileSync(
-  path.join(process.cwd(), 'prompts', 'grading-system-prompt.txt'),
-  'utf-8'
-);
 
 interface GradeStudentParams {
   assignmentId: string;
@@ -17,6 +12,9 @@ interface GradeStudentParams {
   rubric: Rubric;
   vectorStoreId: string;
   jobId?: string;
+  /** Teacher who triggered the grading run — used for per-teacher token audit. */
+  teacherId?: string;
+  teacherName?: string;
 }
 
 export async function gradeStudentAnswer({
@@ -27,8 +25,13 @@ export async function gradeStudentAnswer({
   rubric,
   vectorStoreId,
   jobId,
+  teacherId,
+  teacherName,
 }: GradeStudentParams) {
   try {
+    const config = await getEffectiveAiConfig();
+    const openai = await getOpenAI();
+
     const messagePayload = {
       question_id: questionId,
       student_answer: studentAnswer,
@@ -38,9 +41,11 @@ export async function gradeStudentAnswer({
 
     // Single Responses API call replaces thread/message/run/poll flow
     const response = await openai.responses.create({
-      model: 'gpt-4o-mini',
-      instructions: systemPrompt,
+      model: config.model,
+      instructions: config.systemPrompt,
       input: JSON.stringify(messagePayload),
+      temperature: config.temperature,
+      ...(config.maxTokens ? { max_output_tokens: config.maxTokens } : {}),
       tools: [
         {
           type: 'file_search' as const,
@@ -128,6 +133,23 @@ export async function gradeStudentAnswer({
         estimated_cost: cost,
       });
     }
+
+    // Audit: one entry per grading call, attributed to the triggering teacher.
+    await logAudit({
+      actorUserId: teacherId ?? null,
+      actorName: teacherName ?? null,
+      action: 'ai.grading.call',
+      entityType: 'assignment',
+      entityId: assignmentId,
+      details: {
+        student_id: studentId,
+        question_id: questionId,
+        job_id: jobId ?? null,
+        model: config.model,
+        tokens_used: totalTokens,
+        status: response.status,
+      },
+    });
 
     return gradingResult;
   } catch (error) {

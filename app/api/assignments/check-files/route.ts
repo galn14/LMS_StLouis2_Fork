@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
-import { openai } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
 import { getUploadedFilesByResourceIds } from '@/lib/db2/acs-repo';
 import path from 'path';
 import fs from 'fs';
@@ -54,6 +54,7 @@ export async function POST(request: NextRequest) {
 
     // 3. Check each resource
     const files: FileCheckResult[] = [];
+    const openai = await getOpenAI();
 
     await Promise.all(
       resources.map(async (resource) => {

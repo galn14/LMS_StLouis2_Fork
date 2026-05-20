@@ -14,6 +14,7 @@ import {
   FaSignOutAlt,
   FaTimes,
   FaUsers,
+  FaRobot,
 } from 'react-icons/fa';
 import { NAVIGATION_ITEMS, ADMIN_NAVIGATION_ITEMS } from '@/lib/constants';
 import { cn } from '@/lib/utils';
@@ -29,6 +30,7 @@ const iconMap = {
   FaUniversity: FaUniversity,
   FaBullhorn: FaBullhorn,
   FaUsers: FaUsers,
+  FaRobot: FaRobot,
 } as const;
 
 interface SidebarProps {

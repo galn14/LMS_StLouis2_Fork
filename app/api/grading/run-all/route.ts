@@ -8,7 +8,8 @@ import {
   updateGradingJobStatus,
 } from '@/lib/db2/acs-repo';
 import { gradeStudentAnswer } from '@/lib/grading-service';
-import { openai } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
+import { canUseFeature } from '@/lib/feature-access';
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,6 +23,12 @@ export async function POST(request: NextRequest) {
     const acsData = await getAcsAssignmentByAssignmentId(assignmentId);
 
     if (!acsData) return NextResponse.json({ success: false, error: 'ACS Config not found' }, { status: 404 });
+
+    // 1b. Enforce feature access (the course must be enabled)
+    const access = await canUseFeature(acsData.course_id, 'ai_grading');
+    if (!access.allowed) {
+      return NextResponse.json({ success: false, error: access.reason }, { status: 403 });
+    }
 
     // 2. Fetch All Student Submissions from LMS DB
     const submissions = await prisma.assignment_submissions.findMany({
@@ -66,7 +73,9 @@ export async function POST(request: NextRequest) {
                          studentAnswer: ans.answer_text,
                          rubric: questionRubric,
                          vectorStoreId: acsData.vector_store_id,
-                         jobId: jobData.id
+                         jobId: jobData.id,
+                         teacherId: session.user.id,
+                         teacherName: session.user.name ?? undefined,
                      });
                 }
             }
@@ -79,6 +88,7 @@ export async function POST(request: NextRequest) {
             // Auto-delete VS after grading — it's only needed during grading.
             // Cleanup/archive route handles file deletion separately.
             try {
+                const openai = await getOpenAI();
                 await openai.vectorStores.delete(acsData.vector_store_id);
             } catch (e: any) {
                 if (e.status !== 404) console.warn('Failed to auto-delete VS after grading:', e.message);

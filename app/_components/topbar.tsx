@@ -23,6 +23,7 @@ export default function Topbar({ onMenuClick }: { onMenuClick: () => void }) {
     '/session': 'MY SESSION',
     '/schedule': 'MY SCHEDULE',
     '/course/[code]': 'MY COURSE DETAIL',
+    '/admin/ai': 'AI MANAGEMENT',
   };
 
   const pageTitle = pathTitleMap[pathname] || 'MY PAGE';

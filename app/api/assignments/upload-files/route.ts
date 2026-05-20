@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
-import { openai } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
 import {
   getAcsAssignmentByAssignmentId,
   insertUploadedFiles,
@@ -57,6 +57,8 @@ export async function POST(request: NextRequest) {
     // Write file to temp
     const buffer = Buffer.from(await file.arrayBuffer());
     await fs.promises.writeFile(tempFilePath, buffer);
+
+    const openai = await getOpenAI();
 
     try {
         // 5. Upload to OpenAI

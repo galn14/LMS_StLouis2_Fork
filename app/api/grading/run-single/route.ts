@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { getAcsAssignmentByAssignmentId } from '@/lib/db2/acs-repo';
 import { gradeStudentAnswer } from '@/lib/grading-service';
+import { canUseFeature } from '@/lib/feature-access';
 import { Rubric } from '@/lib/types';
 
 export async function POST(request: NextRequest) {
@@ -21,7 +22,12 @@ export async function POST(request: NextRequest) {
     if (!acsData) {
       return NextResponse.json({ success: false, error: 'ACS configuration not found' }, { status: 404 });
     }
-    
+
+    const access = await canUseFeature(acsData.course_id, 'ai_grading');
+    if (!access.allowed) {
+      return NextResponse.json({ success: false, error: access.reason }, { status: 403 });
+    }
+
     // Type assertion for the stored JSONB
     const rawRubric = acsData.rubric;
     let questionRubric: any = null;
@@ -45,6 +51,8 @@ export async function POST(request: NextRequest) {
       studentAnswer,
       rubric: questionRubric,
       vectorStoreId: acsData.vector_store_id,
+      teacherId: session.user.id,
+      teacherName: session.user.name ?? undefined,
     });
 
     return NextResponse.json({ success: true, data: result });

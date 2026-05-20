@@ -3,6 +3,8 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { initDetection, processDetection } from '@/lib/plagiarism/detection';
+import { prisma } from '@/lib/prisma';
+import { canUseFeature } from '@/lib/feature-access';
 
 export async function POST(request: Request) {
   try {
@@ -22,6 +24,25 @@ export async function POST(request: Request) {
 
     if (!assignmentId) {
       return NextResponse.json({ error: 'Missing assignmentId' }, { status: 400 });
+    }
+
+    // Enforce feature access for teachers (admins bypass).
+    if (!role.includes('ADMIN')) {
+      const assignment = await prisma.assignments.findUnique({
+        where: { id: parseInt(assignmentId, 10) },
+        include: { sessions: { include: { class_courses: true } } },
+      });
+      const courseId = assignment?.sessions?.class_courses?.course_id;
+      if (!courseId) {
+        return NextResponse.json(
+          { error: 'Could not resolve course for assignment' },
+          { status: 400 }
+        );
+      }
+      const access = await canUseFeature(String(courseId), 'plagiarism');
+      if (!access.allowed) {
+        return NextResponse.json({ error: access.reason }, { status: 403 });
+      }
     }
 
     // questionIds: string[] — empty or missing means "all essay questions"

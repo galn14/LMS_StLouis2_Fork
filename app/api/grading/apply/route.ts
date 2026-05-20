@@ -40,6 +40,19 @@ export async function POST(request: NextRequest) {
     const numericAssignmentId = parseInt(assignmentId.toString(), 10);
     let updatedCount = 0;
 
+    // Load each question's configured max points so we can rescale the AI's 0-100
+    // output back into the assignment's own grading scale. The AI prompt always
+    // returns scores on a 0-100 scale, but each question can be worth any number
+    // of points (set at assignment creation), so a raw write would produce totals
+    // like 370/100.
+    const questions = await prisma.assignment_questions.findMany({
+      where: { assignment_id: numericAssignmentId },
+      select: { id: true, points: true },
+    });
+    const questionPointsById = new Map<number, number>(
+      questions.map(q => [q.id, q.points ?? 0])
+    );
+
     // Apply scores to LMS database using a transaction
     await prisma.$transaction(async (tx) => {
       for (const result of results) {
@@ -61,14 +74,20 @@ export async function POST(request: NextRequest) {
 
         if (!submission) continue;
 
-        // Update the answer with the AI score
+        // Scale the AI score (0..max_score, typically 0..100) into the question's
+        // configured point value. Round to 2 decimals.
+        const aiMax = result.max_score && result.max_score > 0 ? result.max_score : 100;
+        const questionPoints = questionPointsById.get(questionId) ?? 0;
+        const scaledPoints = Math.round((result.score / aiMax) * questionPoints * 100) / 100;
+
+        // Update the answer with the scaled AI score
         const updateResult = await tx.assignment_answers.updateMany({
           where: {
             submission_id: submission.id,
             question_id: questionId,
           },
           data: {
-            points_earned: result.score,
+            points_earned: scaledPoints,
             feedback: result.feedback || null,
           },
         });

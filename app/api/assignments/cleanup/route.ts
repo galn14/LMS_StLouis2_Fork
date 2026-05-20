@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/auth';
 import { prisma } from '@/lib/prisma';
-import { openai } from '@/lib/openai';
+import { getOpenAI } from '@/lib/openai';
 import {
   archiveAcsAssignment,
   getAcsAssignmentByAssignmentId,
@@ -55,6 +55,8 @@ export async function POST(request: NextRequest) {
         files: [] as { fileId: string; status: string }[],
         assignmentStatusUpdate: 'failed'
     };
+
+    const openai = await getOpenAI();
 
     try {
         // Delete Vector Store

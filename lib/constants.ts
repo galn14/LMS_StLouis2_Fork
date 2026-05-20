@@ -20,6 +20,7 @@ export const ADMIN_NAVIGATION_ITEMS = [
   { icon: 'FaBook', text: 'Course Management', path: '/admin/courses' },
   { icon: 'FaUniversity', text: 'Class Management', path: '/admin/classes' },
   { icon: 'FaUsers', text: 'User Management', path: '/user' },
+  { icon: 'FaRobot', text: 'AI Management', path: '/admin/ai' },
 ] as const;
 
 // User roles
