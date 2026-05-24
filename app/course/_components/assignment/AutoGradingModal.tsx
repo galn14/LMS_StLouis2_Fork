@@ -459,10 +459,12 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
     arr.push(r);
     studentMap.set(r.student_id, arr);
   });
+  const visibleReviewRubric = rubric.slice(0, 2);
+  const hiddenReviewRubricCount = Math.max(rubric.length - visibleReviewRubric.length, 0);
 
   return (
     <Dialog open={isOpen} onOpenChange={open => !open && onClose()}>
-      <DialogContent className="sm:max-w-[820px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[720px] max-h-[86vh] overflow-y-auto overflow-x-hidden p-5 gap-3 [&>*]:min-w-0">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-lg">
             <FaRobot className="text-indigo-600" />
@@ -497,7 +499,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
         )}
 
         {/* Back button */}
-        {(step === 2 || step === 3 || step === 4) && (
+        {(step === 2 || step === 3 || (step === 4 && !grading)) && (
           <button
             onClick={() => setStep(prev => (prev - 1) as Step)}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-700 mb-2 w-fit"
@@ -772,67 +774,78 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
             STEP 4 — Confirm
         ═══════════════════ */}
         {step === 4 && (
-          <div className="space-y-5 py-2">
-            <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
-              <h3 className="font-semibold text-indigo-800 mb-3">Ready to start AI grading</h3>
-              <div className="space-y-2 text-sm text-indigo-700">
-                <div className="flex items-center gap-2">
-                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
-                  <span><strong>{submissionCount}</strong> student submission{submissionCount !== 1 ? 's' : ''} will be graded</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
-                  <span><strong>{selectedQuestionIds.length}</strong> essay question{selectedQuestionIds.length !== 1 ? 's' : ''} selected</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
-                  <span><strong>{selectedResourceIds.length}</strong> course material{selectedResourceIds.length !== 1 ? 's' : ''} as reference</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <FaCheckCircle className="text-indigo-400 shrink-0" size={14} />
-                  <span>Scores will <strong>not</strong> be saved until you click &ldquo;Save Scores to Gradebook&rdquo;</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Rubric summary */}
-            <div>
-              <h4 className="text-sm font-semibold text-gray-600 mb-2">Your scoring guide:</h4>
-              <div className="space-y-3">
-                {rubric.map(entry => (
-                  <div key={entry.questionId} className="border rounded-xl p-3">
-                    <p className="text-xs font-semibold text-gray-600 mb-2">
-                      {entry.questionText.length > 60 ? entry.questionText.slice(0, 60) + '…' : entry.questionText}
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      {entry.criteria.map((c, i) => (
-                        <span key={i} className="text-xs bg-indigo-50 text-indigo-700 px-2 py-1 rounded-full">
-                          {c.name}: {c.weight}%
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
+          <div className="flex min-w-0 flex-col gap-3 py-1">
             {gradingError && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-2">
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3 flex items-start gap-2">
                 <FaExclamationTriangle className="text-red-500 shrink-0 mt-0.5" />
                 <p className="text-sm text-red-700">{gradingError}</p>
               </div>
             )}
 
+            {!grading && (
+              <>
+                <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3">
+                  <h3 className="text-sm font-semibold text-indigo-800 mb-2">Ready to start AI grading</h3>
+                  <div className="grid gap-1.5 text-sm text-indigo-700 sm:grid-cols-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FaCheckCircle className="text-indigo-400 shrink-0" size={13} />
+                      <span className="truncate"><strong>{submissionCount}</strong> student submission{submissionCount !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FaCheckCircle className="text-indigo-400 shrink-0" size={13} />
+                      <span className="truncate"><strong>{selectedQuestionIds.length}</strong> essay question{selectedQuestionIds.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FaCheckCircle className="text-indigo-400 shrink-0" size={13} />
+                      <span className="truncate"><strong>{selectedResourceIds.length}</strong> course material{selectedResourceIds.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FaCheckCircle className="text-indigo-400 shrink-0" size={13} />
+                      <span className="truncate">Save scores after review</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Rubric summary */}
+                <div className="min-w-0">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-semibold text-gray-600">Your scoring guide:</h4>
+                    {hiddenReviewRubricCount > 0 && (
+                      <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
+                        +{hiddenReviewRubricCount} more
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex min-w-0 flex-col gap-2">
+                    {visibleReviewRubric.map(entry => (
+                      <div key={entry.questionId} className="min-w-0 border rounded-xl p-2.5">
+                        <p className="truncate text-xs font-semibold text-gray-600 mb-1.5">
+                          {entry.questionText}
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {entry.criteria.map((c, i) => (
+                            <span key={i} className="max-w-full truncate text-xs bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full">
+                              {c.name}: {c.weight}%
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
             {/* ── Preflight checking spinner ── */}
-            {preflight.checking && (
-              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex items-center gap-2">
+            {!grading && preflight.checking && (
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-3 flex items-center gap-2">
                 <FaSpinner className="animate-spin text-gray-500" size={13} />
                 <span className="text-sm text-gray-600">Checking course material files…</span>
               </div>
             )}
 
             {/* ── Preflight warning panel ── */}
-            {preflight.checked && !preflight.confirmed && !preflight.checking && (
+            {!grading && preflight.checked && !preflight.confirmed && !preflight.checking && (
               <div className="border border-yellow-300 bg-yellow-50 rounded-xl overflow-hidden">
                 <div className="px-4 py-3 border-b border-yellow-200 flex items-center gap-2">
                   <FaExclamationTriangle className="text-yellow-600 shrink-0" size={14} />
@@ -885,10 +898,15 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
             )}
 
             {grading && (
-              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5">
+              <div className="min-w-0 bg-indigo-50 border border-indigo-200 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <FaSpinner className="animate-spin text-indigo-600" />
                   <span className="font-medium text-indigo-800">AI is grading essays…</span>
+                </div>
+                <div className="mb-3 grid gap-2 text-xs text-indigo-700 sm:grid-cols-3">
+                  <span className="rounded-lg bg-white/60 px-2 py-1"><strong>{submissionCount}</strong> submissions</span>
+                  <span className="rounded-lg bg-white/60 px-2 py-1"><strong>{selectedQuestionIds.length}</strong> questions</span>
+                  <span className="rounded-lg bg-white/60 px-2 py-1"><strong>{selectedResourceIds.length}</strong> materials</span>
                 </div>
                 <div className="w-full bg-indigo-200 rounded-full h-2.5 mb-2">
                   <div
@@ -903,7 +921,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
             <div className="flex items-center gap-3 pt-2">
               <Button
                 onClick={runGrading}
-                disabled={grading || preflight.checking || (preflight.checked && !preflight.confirmed && !preflight.can_proceed)}
+                disabled={grading || preflight.checking || (preflight.checked && !preflight.confirmed)}
                 className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white"
               >
                 {grading ? <FaSpinner className="animate-spin" size={13} /> : preflight.checking ? <FaSpinner className="animate-spin" size={13} /> : <FaPlay size={13} />}

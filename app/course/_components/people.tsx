@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, User, Users } from 'lucide-react';
+import { buildPeopleQuery } from '@/lib/course-class-selection';
 
 interface Teacher {
   id: number;
@@ -38,9 +39,10 @@ interface Student {
 
 interface PeopleProps {
   courseCode?: string;
+  classId?: number | null;
 }
 
-const People = ({ courseCode }: PeopleProps) => {
+const People = ({ courseCode, classId }: PeopleProps) => {
   const [activePeopleTab, setActivePeopleTab] = useState('Teacher');
   const [teacher, setTeacher] = useState<Teacher | null>(null);
   const [students, setStudents] = useState<Student[]>([]);
@@ -55,7 +57,7 @@ const People = ({ courseCode }: PeopleProps) => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/courses/${courseCode}/people?type=teacher`);
+      const response = await fetch(`/api/courses/${courseCode}/people?${buildPeopleQuery('teacher', classId)}`);
       const result = await response.json();
 
       if (result.success) {
@@ -71,7 +73,7 @@ const People = ({ courseCode }: PeopleProps) => {
     } finally {
       setLoading(false);
     }
-  }, [courseCode]);
+  }, [courseCode, classId]);
 
   // Fetch students data
   const fetchStudents = useCallback(async () => {
@@ -81,7 +83,7 @@ const People = ({ courseCode }: PeopleProps) => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/courses/${courseCode}/people?type=students`);
+      const response = await fetch(`/api/courses/${courseCode}/people?${buildPeopleQuery('students', classId)}`);
       const result = await response.json();
 
       if (result.success) {
@@ -97,7 +99,7 @@ const People = ({ courseCode }: PeopleProps) => {
     } finally {
       setLoading(false);
     }
-  }, [courseCode]);
+  }, [courseCode, classId]);
 
   // Fetch all people data
   const fetchAllPeople = useCallback(async () => {
@@ -107,7 +109,7 @@ const People = ({ courseCode }: PeopleProps) => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`/api/courses/${courseCode}/people?type=all`);
+      const response = await fetch(`/api/courses/${courseCode}/people?${buildPeopleQuery('all', classId)}`);
       const result = await response.json();
 
       if (result.success) {
@@ -126,7 +128,7 @@ const People = ({ courseCode }: PeopleProps) => {
     } finally {
       setLoading(false);
     }
-  }, [courseCode]);
+  }, [courseCode, classId]);
 
   // Load data when component mounts or courseCode changes
   useEffect(() => {

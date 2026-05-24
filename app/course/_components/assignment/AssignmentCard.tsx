@@ -31,6 +31,8 @@ interface AssignmentCardProps {
   onGradeClick?: (assignment: Assignment, e: React.MouseEvent) => void;
   onPlagiarismClick?: (assignment: Assignment, e: React.MouseEvent) => void;
   onAutoGradeClick?: (assignment: Assignment, e: React.MouseEvent) => void;
+  aiGradingEnabled?: boolean;
+  plagiarismEnabled?: boolean;
 }
 
 const getStatusIcon = (iconName: string) => {
@@ -58,6 +60,8 @@ export const AssignmentCard = ({
   onGradeClick,
   onPlagiarismClick,
   onAutoGradeClick,
+  aiGradingEnabled = true,
+  plagiarismEnabled = true,
 }: AssignmentCardProps) => {
   const status = getAssignmentStatus(assignment, isTeacher, currentUserId);
   const userSubmission = currentUserId ? getUserSubmission(assignment, currentUserId) : null;
@@ -214,8 +218,18 @@ export const AssignmentCard = ({
           {/* AI Grade */}
           {onAutoGradeClick && (
             <button
-              onClick={e => onAutoGradeClick(assignment, e)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg hover:bg-indigo-100 transition-colors"
+              onClick={aiGradingEnabled ? e => onAutoGradeClick(assignment, e) : undefined}
+              disabled={!aiGradingEnabled}
+              title={
+                aiGradingEnabled
+                  ? undefined
+                  : 'AI grading is not enabled for this course. Ask an admin to enable it.'
+              }
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors ${
+                aiGradingEnabled
+                  ? 'text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100'
+                  : 'text-gray-400 bg-gray-100 border-gray-200 cursor-not-allowed'
+              }`}
             >
               <FaRobot size={11} /> AI Grade
             </button>
@@ -224,8 +238,18 @@ export const AssignmentCard = ({
           {/* Check Plagiarism — only if has submissions */}
           {onPlagiarismClick && hasSubmissions && (
             <button
-              onClick={e => onPlagiarismClick(assignment, e)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 transition-colors"
+              onClick={plagiarismEnabled ? e => onPlagiarismClick(assignment, e) : undefined}
+              disabled={!plagiarismEnabled}
+              title={
+                plagiarismEnabled
+                  ? undefined
+                  : 'Plagiarism detection is not enabled for this course. Ask an admin to enable it.'
+              }
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border rounded-lg transition-colors ${
+                plagiarismEnabled
+                  ? 'text-amber-700 bg-amber-50 border-amber-200 hover:bg-amber-100'
+                  : 'text-gray-400 bg-gray-100 border-gray-200 cursor-not-allowed'
+              }`}
             >
               <FaShieldAlt size={11} /> Check Plagiarism
             </button>

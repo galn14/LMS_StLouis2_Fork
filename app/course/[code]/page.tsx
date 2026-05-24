@@ -12,15 +12,17 @@ import People from '../_components/people';
 import SimpleEditor from '../_components/syllabus';
 import AssignmentTab from '../_components/assignment';
 import ScoreTab from '../_components/score';
+import { selectClassCourse, selectInitialSessionId } from '@/lib/course-class-selection';
 
 const CourseDetail = () => {
   const params = useParams();
   const searchParams = useSearchParams();
   const code = typeof params === 'object' && 'code' in params ? params['code'] : null;
 
-  // Get sessionId and tab from URL search params
+  // Get sessionId, tab, and classId from URL search params
   const sessionIdParam = searchParams.get('sessionId');
   const tabParam = searchParams.get('tab');
+  const classIdParam = searchParams.get('classId');
   const assignmentIdParam = searchParams.get('assignmentId');
   const [course, setCourse] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -37,16 +39,13 @@ const CourseDetail = () => {
         const courseData = data.data || null;
         setCourse(courseData);
 
-        if (sessionIdParam) {
-          const sessionId = parseInt(sessionIdParam);
-          if (!isNaN(sessionId)) {
-            setActiveSession(sessionId);
+        const initialSessionId = selectInitialSessionId(courseData?.class_courses, classIdParam, sessionIdParam);
+
+        if (initialSessionId !== null) {
+          setActiveSession(initialSessionId);
+          if (sessionIdParam) {
             setActiveTab('Session');
           }
-        } else if (courseData?.class_courses?.[0]?.sessions?.length > 0) {
-          // Default to first session if no URL parameter
-          const firstSession = courseData.class_courses[0].sessions[0];
-          setActiveSession(firstSession.id);
         }
 
         // Set active tab from URL parameter
@@ -60,7 +59,7 @@ const CourseDetail = () => {
       }
     };
     fetchCourse();
-  }, [code, sessionIdParam]);
+  }, [code, classIdParam, sessionIdParam, tabParam]);
   if (loading) {
     return (
       <div className="flex min-h-screen w-full overflow-hidden">
@@ -101,10 +100,10 @@ const CourseDetail = () => {
     );
   }
 
-  const classCourse = course.class_courses?.[0];
-  const teacher = classCourse?.teacher || {};
-  const students = classCourse?.students || [];
-  const sessions = classCourse?.sessions || [];
+  const activeClassCourse = selectClassCourse<any>(course.class_courses, classIdParam, activeSession);
+  const teacher = activeClassCourse?.teacher || {};
+  const students = activeClassCourse?.students || [];
+  const sessions = activeClassCourse?.sessions || [];
 
   return (
     // <div className="flex min-h-screen w-full overflow-hidden">
@@ -134,7 +133,7 @@ const CourseDetail = () => {
                   <div className="flex flex-wrap items-center mt-1 gap-2 text-sm md:text-base">
                     <span className="text-gray-600">🔢 {course.course_code}</span>
                     <span className="text-gray-600 hidden sm:inline">•</span>
-                    <span className="text-gray-600">📚 {classCourse?.class_name}</span>
+                    <span className="text-gray-600">📚 {activeClassCourse?.class_name}</span>
                   </div>
                   <div className="flex items-center mt-1 text-sm md:text-base">
                     <span className="text-gray-600 mr-2">👤</span>
@@ -187,10 +186,10 @@ const CourseDetail = () => {
             )}
             {activeTab === 'Scoring' && (
               <div className="bg-white rounded-lg shadow-sm p-6">
-                <ScoreTab courseCode={code as string} className={course?.class_courses?.[0]?.classes?.class_name} />
+                <ScoreTab courseCode={code as string} className={activeClassCourse?.class_name} />
               </div>
             )}
-            {activeTab === 'People' && <People courseCode={code as string} />}
+            {activeTab === 'People' && <People courseCode={code as string} classId={activeClassCourse?.class_id} />}
             {!['Session', 'Syllabus', 'Forum', 'Assignment', 'Scoring', 'People'].includes(activeTab) && (
               <div>
                 <p className="text-gray-700">Content for {activeTab} will be added here.</p>

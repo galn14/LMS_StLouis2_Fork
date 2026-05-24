@@ -31,6 +31,7 @@ export default function AssignmentTab({ courseCode, sessionId, initialAssignment
   const [showPlagiarismModal, setShowPlagiarismModal] = useState(false);
   const [showAutoGradingModal, setShowAutoGradingModal] = useState(false);
   const [selectedAssignment, setSelectedAssignment] = useState<Assignment | null>(null);
+  const [featureAccess, setFeatureAccess] = useState<{ ai_grading: boolean; plagiarism: boolean } | null>(null);
 
   // Custom hooks
   const { assignments, loading, refetch } = useAssignmentData(courseCode);
@@ -39,6 +40,20 @@ export default function AssignmentTab({ courseCode, sessionId, initialAssignment
   const isTeacher = session?.user?.role?.toUpperCase() === 'TEACHER' || session?.user?.role?.toUpperCase() === 'GURU';
   const currentUserId = session?.user?.id ? parseInt(session.user.id) : null;
   const filteredAssignments = filterAssignments(assignments, isTeacher);
+
+  // Load per-course feature access (admin "Manage Access Scopes" toggles).
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/courses/${courseCode}/feature-access`)
+      .then(res => res.json())
+      .then(data => {
+        if (!cancelled && data.success) setFeatureAccess(data.data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [courseCode]);
 
   // Deep-link: when navigating in with ?assignmentId=N, auto-open that assignment's detail.
   // Only fire once per id, after assignments load.
@@ -154,6 +169,8 @@ export default function AssignmentTab({ courseCode, sessionId, initialAssignment
             onGradeClick={isTeacher ? handleGradeClick : undefined}
             onPlagiarismClick={isTeacher ? handlePlagiarismClick : undefined}
             onAutoGradeClick={isTeacher ? handleAutoGradeClick : undefined}
+            aiGradingEnabled={featureAccess?.ai_grading ?? false}
+            plagiarismEnabled={featureAccess?.plagiarism ?? false}
           />
         )}
 

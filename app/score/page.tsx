@@ -25,83 +25,33 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  groupSubmissionsByCourse,
+  type CourseScore,
+  type ScoreSubmission,
+} from '@/lib/score-view-utils';
+import {
   FaSpinner,
-  FaBookOpen,
-  FaUser,
   FaClock,
   FaCheckCircle,
   FaExclamationCircle,
-  FaGraduationCap,
   FaTrophy,
-  FaFileAlt,
   FaEye,
   FaSearch,
+  FaChevronDown,
+  FaChevronUp,
 } from 'react-icons/fa';
 
-interface Submission {
-  id: number;
-  assignment_id: number;
-  assignment_title: string;
-  assignment_description?: string;
-  assignment_total_points: number;
-  assignment_due_date?: string;
-  assignment_type: string;
-  course_code: string;
-  course_name: string;
-  class_name: string;
-  session_title: string;
-  session_number: number;
-  student?: {
-    id: number;
-    nama_lengkap: string;
-    user_name: string;
-  };
-  attempt_number: number;
-  started_at?: string;
-  submitted_at?: string;
-  total_score?: number;
-  status: string;
-  status_id: number;
-  feedback?: string;
-  graded_by?: number;
-  graded_at?: string;
-}
-
-interface CourseScore {
-  course_code: string;
-  course_name: string;
-  class_name: string;
-  submissions: Submission[];
-  totalSubmissions: number;
-  gradedSubmissions: number;
-  averageScore: number;
-  totalPossiblePoints: number;
-  earnedPoints: number;
-}
-
-interface AssignmentScore {
-  assignment_id: number;
-  assignment_title: string;
-  assignment_type: string;
-  assignment_total_points: number;
-  course_code: string;
-  course_name: string;
-  class_name: string;
-  submissions: Submission[];
-  totalSubmissions: number;
-  gradedSubmissions: number;
-  averageScore: number;
-  averagePercentage: number;
-}
+type Submission = ScoreSubmission;
+const ASSIGNMENT_PREVIEW_LIMIT = 3;
 
 export default function ScorePage() {
   const { data: session, status } = useSession();
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [courseScores, setCourseScores] = useState<CourseScore[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<'submissions' | 'courses' | 'assignments'>('submissions');
+  const [viewMode, setViewMode] = useState<'submissions' | 'courses'>('submissions');
+  const [expandedAssignmentLists, setExpandedAssignmentLists] = useState<Record<string, boolean>>({});
 
   // Filters for the submissions data table
   const [searchQuery, setSearchQuery] = useState('');
@@ -170,49 +120,17 @@ export default function ScorePage() {
     });
   }, [submissions, searchQuery, courseFilter, classFilter, assignmentFilter, statusFilter]);
 
-  // Group submissions by assignment for the "By Assignment" view.
-  const assignmentScores = useMemo<AssignmentScore[]>(() => {
-    const groups: Record<number, AssignmentScore> = {};
-    submissions.forEach(s => {
-      if (!groups[s.assignment_id]) {
-        groups[s.assignment_id] = {
-          assignment_id: s.assignment_id,
-          assignment_title: s.assignment_title,
-          assignment_type: s.assignment_type,
-          assignment_total_points: s.assignment_total_points,
-          course_code: s.course_code,
-          course_name: s.course_name,
-          class_name: s.class_name,
-          submissions: [],
-          totalSubmissions: 0,
-          gradedSubmissions: 0,
-          averageScore: 0,
-          averagePercentage: 0,
-        };
-      }
-      const g = groups[s.assignment_id];
-      g.submissions.push(s);
-      g.totalSubmissions++;
-      if (s.total_score !== null && s.total_score !== undefined) {
-        g.gradedSubmissions++;
-        g.averageScore += s.total_score;
-      }
-    });
-    Object.values(groups).forEach(g => {
-      if (g.gradedSubmissions > 0) {
-        g.averageScore = g.averageScore / g.gradedSubmissions;
-        g.averagePercentage =
-          g.assignment_total_points > 0 ? (g.averageScore / g.assignment_total_points) * 100 : 0;
-      }
-    });
-    return Object.values(groups).sort((a, b) => a.assignment_title.localeCompare(b.assignment_title));
-  }, [submissions]);
+  const courseScores = useMemo<CourseScore[]>(
+    () => groupSubmissionsByCourse(filteredSubmissions),
+    [filteredSubmissions]
+  );
 
-  const handleAssignmentClick = (assignment: AssignmentScore) => {
-    router.push(
-      `/course/${assignment.course_code}?tab=Assignment&assignmentId=${assignment.assignment_id}`
-    );
-  };
+  const hasActiveFilters =
+    Boolean(searchQuery) ||
+    courseFilter !== 'all' ||
+    classFilter !== 'all' ||
+    assignmentFilter !== 'all' ||
+    statusFilter !== 'all';
 
   const resetFilters = () => {
     setSearchQuery('');
@@ -252,50 +170,9 @@ export default function ScorePage() {
       const fetchedSubmissions = data.data || [];
 
       setSubmissions(fetchedSubmissions);
-
-      // Group submissions by course for course view
-      const courseGroups: Record<string, CourseScore> = {};
-
-      fetchedSubmissions.forEach((submission: Submission) => {
-        // Use course_code + class_name as key to separate different classes with same course
-        const courseKey = `${submission.course_code}-${submission.class_name}`;
-
-        if (!courseGroups[courseKey]) {
-          courseGroups[courseKey] = {
-            course_code: submission.course_code,
-            course_name: submission.course_name,
-            class_name: submission.class_name,
-            submissions: [],
-            totalSubmissions: 0,
-            gradedSubmissions: 0,
-            averageScore: 0,
-            totalPossiblePoints: 0,
-            earnedPoints: 0,
-          };
-        }
-
-        courseGroups[courseKey].submissions.push(submission);
-        courseGroups[courseKey].totalSubmissions++;
-        courseGroups[courseKey].totalPossiblePoints += submission.assignment_total_points;
-
-        if (submission.total_score !== null && submission.total_score !== undefined) {
-          courseGroups[courseKey].gradedSubmissions++;
-          courseGroups[courseKey].earnedPoints += submission.total_score;
-        }
-      });
-
-      // Calculate average scores
-      Object.values(courseGroups).forEach(course => {
-        if (course.gradedSubmissions > 0) {
-          course.averageScore = course.earnedPoints / course.gradedSubmissions;
-        }
-      });
-
-      setCourseScores(Object.values(courseGroups));
     } catch (error) {
       console.error('Error fetching scores:', error);
       setSubmissions([]);
-      setCourseScores([]);
       alert(`Error loading scores: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setLoading(false);
@@ -308,8 +185,19 @@ export default function ScorePage() {
     );
   };
 
-  const handleCourseClick = (courseCode: string, className: string) => {
+  const handleCourseClick = (courseCode: string) => {
     router.push(`/course/${courseCode}?tab=Scoring`);
+  };
+
+  const handleAssignmentClick = (courseCode: string, assignmentId: number) => {
+    router.push(`/course/${courseCode}?tab=Assignment&assignmentId=${assignmentId}`);
+  };
+
+  const toggleAssignmentList = (courseKey: string) => {
+    setExpandedAssignmentLists(current => ({
+      ...current,
+      [courseKey]: !current[courseKey],
+    }));
   };
 
   const formatDateTime = (dateString: string) => {
@@ -558,16 +446,6 @@ export default function ScorePage() {
               >
                 By Course
               </button>
-              <button
-                onClick={() => setViewMode('assignments')}
-                className={`px-4 py-2 rounded-lg transition-colors ${
-                  viewMode === 'assignments'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-white text-gray-700 hover:bg-gray-50 border'
-                }`}
-              >
-                By Assignment
-              </button>
             </div>
           </div>
 
@@ -669,11 +547,7 @@ export default function ScorePage() {
                   Showing <span className="font-medium text-gray-800">{filteredSubmissions.length}</span> of{' '}
                   {submissions.length} submissions
                 </span>
-                {(searchQuery ||
-                  courseFilter !== 'all' ||
-                  classFilter !== 'all' ||
-                  assignmentFilter !== 'all' ||
-                  statusFilter !== 'all') && (
+                {hasActiveFilters && (
                   <button onClick={resetFilters} className="text-blue-600 hover:underline text-xs">
                     Reset filters
                   </button>
@@ -758,224 +632,177 @@ export default function ScorePage() {
                 </Table>
               )}
             </div>
-          ) : viewMode === 'assignments' ? (
-            // By Assignment View
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-              {assignmentScores.map(a => {
-                const completionPct =
-                  a.totalSubmissions > 0 ? (a.gradedSubmissions / a.totalSubmissions) * 100 : 0;
-                return (
-                  <Card key={a.assignment_id} className="hover:shadow-lg transition-shadow">
-                    <CardHeader className="pb-3">
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="min-w-0">
-                          <CardTitle className="text-lg font-semibold text-gray-800 line-clamp-2">
-                            {a.assignment_title}
-                          </CardTitle>
-                          <p className="text-sm text-gray-600 mt-1">
-                            {a.course_code} • {a.course_name}
-                          </p>
-                          <div className="flex flex-wrap gap-2 mt-2">
-                            <Badge variant="outline">{a.class_name}</Badge>
-                            <Badge variant="outline">{a.assignment_type}</Badge>
-                          </div>
-                        </div>
-                        <Badge variant="secondary" className="whitespace-nowrap">
-                          {a.totalSubmissions} subs
-                        </Badge>
-                      </div>
-                    </CardHeader>
-
-                    <CardContent>
-                      <div className="grid grid-cols-3 gap-2 mb-4">
-                        <div className="text-center">
-                          <p className="text-2xl font-bold text-green-600">{a.gradedSubmissions}</p>
-                          <p className="text-xs text-gray-500">Graded</p>
-                        </div>
-                        <div className="text-center">
-                          <p className="text-2xl font-bold text-blue-600">
-                            {a.gradedSubmissions > 0
-                              ? `${a.averageScore.toFixed(1)}/${a.assignment_total_points}`
-                              : '—'}
-                          </p>
-                          <p className="text-xs text-gray-500">Avg Score</p>
-                        </div>
-                        <div className="text-center">
-                          <p className="text-2xl font-bold text-purple-600">
-                            {a.gradedSubmissions > 0 ? `${a.averagePercentage.toFixed(0)}%` : '—'}
-                          </p>
-                          <p className="text-xs text-gray-500">Avg %</p>
-                        </div>
-                      </div>
-
-                      <div className="mb-3">
-                        <div className="flex justify-between text-xs text-gray-600 mb-1">
-                          <span>Grading progress</span>
-                          <span>{completionPct.toFixed(0)}%</span>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-2">
-                          <div
-                            className="bg-green-500 h-2 rounded-full transition-all"
-                            style={{ width: `${completionPct}%` }}
-                          />
-                        </div>
-                      </div>
-
-                      {/* Recent Submissions */}
-                      <div className="space-y-2">
-                        <h4 className="text-sm font-medium text-gray-700">Recent Submissions</h4>
-                        {a.submissions.slice(0, 3).map(submission => (
-                          <div
-                            key={submission.id}
-                            className="flex items-center justify-between p-2 bg-gray-50 rounded cursor-pointer hover:bg-gray-100 transition-colors"
-                            onClick={() => handleSubmissionClick(submission)}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-gray-800 truncate">
-                                {submission.student?.nama_lengkap || submission.session_title}
-                              </p>
-                              <p className="text-xs text-gray-500">
-                                {submission.submitted_at
-                                  ? `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()}`
-                                  : 'Not submitted'}
-                              </p>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              {submission.total_score !== null && submission.total_score !== undefined ? (
-                                <Badge variant="default" className="text-xs">
-                                  {submission.total_score}/{submission.assignment_total_points}
-                                </Badge>
-                              ) : (
-                                <Badge variant="secondary" className="text-xs">
-                                  Pending
-                                </Badge>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-
-                        {a.submissions.length > 3 && (
-                          <p className="text-xs text-gray-500 text-center">
-                            +{a.submissions.length - 3} more submissions
-                          </p>
-                        )}
-                      </div>
-
-                      {/* View Assignment Button */}
-                      <div className="mt-4 pt-3 border-t">
-                        <button
-                          onClick={() => handleAssignmentClick(a)}
-                          className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                        >
-                          <FaEye />
-                          View Assignment
-                        </button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })}
-            </div>
           ) : (
             // By Course View
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
-              {courseScores.map(courseScore => (
-                <Card key={courseScore.course_code} className="hover:shadow-lg transition-shadow">
-                  <CardHeader className="pb-3">
-                    <div className="flex justify-between items-start">
-                      <div>
-                        <CardTitle className="text-lg font-semibold text-gray-800">{courseScore.course_code}</CardTitle>
-                        <p className="text-sm text-gray-600 mt-1">{courseScore.course_name}</p>
-                        <Badge variant="outline" className="mt-2">
-                          {courseScore.class_name}
-                        </Badge>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <Badge variant="secondary">{courseScore.totalSubmissions} submissions</Badge>
-                      </div>
-                    </div>
-                  </CardHeader>
+              {courseScores.length === 0 ? (
+                <div className="md:col-span-2 xl:col-span-3 text-center py-12 text-gray-500 text-sm">
+                  No courses match the current filters.
+                  {hasActiveFilters && (
+                    <button onClick={resetFilters} className="ml-2 text-blue-600 hover:underline text-xs">
+                      Reset filters
+                    </button>
+                  )}
+                </div>
+              ) : (
+                courseScores.map(courseScore => {
+                  const courseKey = `${courseScore.course_code}-${courseScore.class_name}`;
+                  const isAssignmentListExpanded = Boolean(expandedAssignmentLists[courseKey]);
+                  const visibleAssignments = isAssignmentListExpanded
+                    ? courseScore.assignments
+                    : courseScore.assignments.slice(0, ASSIGNMENT_PREVIEW_LIMIT);
+                  const hiddenAssignmentCount = Math.max(
+                    courseScore.assignments.length - ASSIGNMENT_PREVIEW_LIMIT,
+                    0
+                  );
 
-                  <CardContent>
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                      <div className="text-center">
-                        <p className="text-2xl font-bold text-green-600">{courseScore.gradedSubmissions}</p>
-                        <p className="text-xs text-gray-500">Graded</p>
-                      </div>
-                      <div className="text-center">
-                        <p className="text-2xl font-bold text-blue-600">
-                          {courseScore.averageScore > 0 ? courseScore.averageScore.toFixed(1) : '0.0'}
-                        </p>
-                        <p className="text-xs text-gray-500">Avg Score</p>
-                      </div>
-                      {!isTeacher && (
-                        <div className="text-center col-span-2">
-                          <p className="text-2xl font-bold text-purple-600">
-                            {courseScore.totalPossiblePoints > 0
-                              ? ((courseScore.earnedPoints / courseScore.totalPossiblePoints) * 100).toFixed(1)
-                              : '0.0'}
-                            %
-                          </p>
-                          <p className="text-xs text-gray-500">Overall Percentage</p>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Recent Submissions */}
-                    <div className="space-y-2">
-                      <h4 className="text-sm font-medium text-gray-700">Recent Submissions</h4>
-                      {courseScore.submissions.slice(0, 3).map(submission => {
-                        return (
-                          <div
-                            key={submission.id}
-                            className="flex items-center justify-between p-2 bg-gray-50 rounded cursor-pointer hover:bg-gray-100 transition-colors"
-                            onClick={() => handleSubmissionClick(submission)}
-                          >
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-gray-800 truncate">
-                                {submission.assignment_title}
-                              </p>
-                              <p className="text-xs text-gray-500">
-                                {submission.submitted_at
-                                  ? `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()}`
-                                  : 'Not submitted'}
-                              </p>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              {submission.total_score !== null && submission.total_score !== undefined ? (
-                                <Badge variant="default" className="text-xs">
-                                  {submission.total_score}/{submission.assignment_total_points}
-                                </Badge>
-                              ) : (
-                                <Badge variant="secondary" className="text-xs">
-                                  Pending
-                                </Badge>
-                              )}
+                  return (
+                    <Card
+                      key={courseKey}
+                      className="h-[520px] hover:shadow-lg transition-shadow flex flex-col"
+                    >
+                      <CardHeader className="pb-3">
+                        <div className="flex justify-between items-start gap-3">
+                          <div className="min-w-0">
+                            <CardTitle className="text-lg font-semibold text-gray-800">
+                              {courseScore.course_code}
+                            </CardTitle>
+                            <p className="text-sm text-gray-600 mt-1 truncate" title={courseScore.course_name}>
+                              {courseScore.course_name}
+                            </p>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              <Badge variant="outline">{courseScore.class_name}</Badge>
+                              <Badge variant="secondary">{courseScore.assignments.length} assignments</Badge>
                             </div>
                           </div>
-                        );
-                      })}
+                          <div className="flex items-center gap-2">
+                            <Badge variant="secondary">{courseScore.totalSubmissions} submissions</Badge>
+                          </div>
+                        </div>
+                      </CardHeader>
 
-                      {courseScore.submissions.length > 3 && (
-                        <p className="text-xs text-gray-500 text-center">
-                          +{courseScore.submissions.length - 3} more submissions
-                        </p>
-                      )}
-                    </div>
+                      <CardContent className="flex flex-1 min-h-0 flex-col">
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-green-600">{courseScore.gradedSubmissions}</p>
+                            <p className="text-xs text-gray-500">Graded</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-2xl font-bold text-blue-600">
+                              {courseScore.averageScore > 0 ? courseScore.averageScore.toFixed(1) : '0.0'}
+                            </p>
+                            <p className="text-xs text-gray-500">Avg Score</p>
+                          </div>
+                          {!isTeacher && (
+                            <div className="text-center col-span-2">
+                              <p className="text-2xl font-bold text-purple-600">
+                                {courseScore.totalPossiblePoints > 0
+                                  ? ((courseScore.earnedPoints / courseScore.totalPossiblePoints) * 100).toFixed(1)
+                                  : '0.0'}
+                                %
+                              </p>
+                              <p className="text-xs text-gray-500">Overall Percentage</p>
+                            </div>
+                          )}
+                        </div>
 
-                    {/* View Course Button */}
-                    <div className="mt-4 pt-3 border-t">
-                      <button
-                        onClick={() => handleCourseClick(courseScore.course_code, courseScore.class_name)}
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg flex items-center justify-center gap-2 transition-colors"
-                      >
-                        <FaEye />
-                        View Course
-                      </button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                        <div className="flex min-h-0 flex-1 flex-col gap-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <h4 className="text-sm font-medium text-gray-700">Assignments</h4>
+                              <p className="text-xs text-gray-500">
+                                {isAssignmentListExpanded
+                                  ? `Showing all ${courseScore.assignments.length}`
+                                  : `Latest ${visibleAssignments.length} of ${courseScore.assignments.length}`}
+                              </p>
+                            </div>
+                            {hiddenAssignmentCount > 0 && (
+                              <button
+                                type="button"
+                                aria-expanded={isAssignmentListExpanded}
+                                onClick={() => toggleAssignmentList(courseKey)}
+                                className="shrink-0 text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+                              >
+                                {isAssignmentListExpanded ? (
+                                  <>
+                                    <FaChevronUp />
+                                    Show latest
+                                  </>
+                                ) : (
+                                  <>
+                                    <FaChevronDown />
+                                    Show all {courseScore.assignments.length}
+                                  </>
+                                )}
+                              </button>
+                            )}
+                          </div>
+
+                          <div className="min-h-0 flex-1 overflow-y-auto pr-1 flex flex-col gap-2">
+                            {visibleAssignments.map(assignment => {
+                              const completionPct =
+                                assignment.totalSubmissions > 0
+                                  ? (assignment.gradedSubmissions / assignment.totalSubmissions) * 100
+                                  : 0;
+                              return (
+                                <button
+                                  type="button"
+                                  key={assignment.assignment_id}
+                                  className="w-full text-left p-2 bg-gray-50 rounded cursor-pointer hover:bg-gray-100 transition-colors"
+                                  onClick={() => handleAssignmentClick(courseScore.course_code, assignment.assignment_id)}
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium text-gray-800 truncate">
+                                        {assignment.assignment_title}
+                                      </p>
+                                      <p className="text-xs text-gray-500">
+                                        {assignment.assignment_type} • {assignment.gradedSubmissions}/
+                                        {assignment.totalSubmissions} graded
+                                      </p>
+                                    </div>
+                                    <Badge
+                                      variant={assignment.gradedSubmissions > 0 ? 'default' : 'secondary'}
+                                      className="text-xs whitespace-nowrap"
+                                    >
+                                      {assignment.gradedSubmissions > 0
+                                        ? `${assignment.averageScore.toFixed(1)}/${assignment.assignment_total_points}`
+                                        : 'Pending'}
+                                    </Badge>
+                                  </div>
+                                  <div className="mt-2">
+                                    <div className="flex justify-between text-xs text-gray-500 mb-1">
+                                      <span>Progress</span>
+                                      <span>{completionPct.toFixed(0)}%</span>
+                                    </div>
+                                    <div className="w-full bg-gray-200 rounded-full h-1.5">
+                                      <div
+                                        className="bg-green-500 h-1.5 rounded-full transition-all"
+                                        style={{ width: `${completionPct}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* View Course Button */}
+                        <div className="mt-4 pt-3 border-t">
+                          <button
+                            onClick={() => handleCourseClick(courseScore.course_code)}
+                            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                          >
+                            <FaEye />
+                            View Course
+                          </button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })
+              )}
             </div>
           )}
         </div>
