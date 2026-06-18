@@ -12,10 +12,6 @@ interface AssignmentGridProps {
   onEditClick: (assignment: Assignment, e: React.MouseEvent) => void;
   onPublishToggle: (assignment: Assignment, e: React.MouseEvent) => void;
   onGradeClick?: (assignment: Assignment, e: React.MouseEvent) => void;
-  onPlagiarismClick?: (assignment: Assignment, e: React.MouseEvent) => void;
-  onAutoGradeClick?: (assignment: Assignment, e: React.MouseEvent) => void;
-  aiGradingEnabled?: boolean;
-  plagiarismEnabled?: boolean;
 }
 
 export const AssignmentGrid = ({
@@ -27,10 +23,6 @@ export const AssignmentGrid = ({
   onEditClick,
   onPublishToggle,
   onGradeClick,
-  onPlagiarismClick,
-  onAutoGradeClick,
-  aiGradingEnabled = true,
-  plagiarismEnabled = true,
 }: AssignmentGridProps) => {
   if (viewMode === 'all') {
     return (
@@ -45,10 +37,6 @@ export const AssignmentGrid = ({
             onEditClick={onEditClick}
             onPublishToggle={onPublishToggle}
             onGradeClick={onGradeClick}
-            onPlagiarismClick={onPlagiarismClick}
-            onAutoGradeClick={onAutoGradeClick}
-            aiGradingEnabled={aiGradingEnabled}
-            plagiarismEnabled={plagiarismEnabled}
           />
         ))}
       </div>
@@ -79,10 +67,6 @@ export const AssignmentGrid = ({
                 onEditClick={onEditClick}
                 onPublishToggle={onPublishToggle}
                 onGradeClick={onGradeClick}
-                onPlagiarismClick={onPlagiarismClick}
-                onAutoGradeClick={onAutoGradeClick}
-                aiGradingEnabled={aiGradingEnabled}
-                plagiarismEnabled={plagiarismEnabled}
               />
             ))}
           </div>

@@ -28,6 +28,7 @@ interface PlagiarismModalProps {
   assignment: Assignment;
   isOpen: boolean;
   onClose: () => void;
+  onRunStarted?: () => void;
 }
 
 interface StudentResult {
@@ -92,7 +93,7 @@ function riskLabel(level: string, similarity: number) {
   return { label: `${pct}% Similar — No Issue`, color: 'text-green-700', bg: 'bg-green-50 border-green-200', icon: <FaCheckCircle className="text-green-500" /> };
 }
 
-export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModalProps) => {
+export const PlagiarismModal = ({ assignment, isOpen, onClose, onRunStarted }: PlagiarismModalProps) => {
   const [step, setStep] = useState<Step>('confirm');
 
   // Scope selection
@@ -237,6 +238,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
       const data = await res.json();
       if (data.detectionId) {
         setDetectionId(data.detectionId);
+        onRunStarted?.();
       } else {
         setDetecting(false);
         setDetectionError(data.error || 'Something went wrong. Please try again.');
@@ -353,7 +355,7 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
 
   return (
     <Dialog open={isOpen} onOpenChange={open => !open && onClose()}>
-      <DialogContent className="sm:max-w-[900px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[900px] max-h-[90vh] overflow-y-auto overflow-x-hidden [&>*]:min-w-0">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-lg">
             <FaShieldAlt className="text-amber-500" />
@@ -532,10 +534,18 @@ export const PlagiarismModal = ({ assignment, isOpen, onClose }: PlagiarismModal
                 </div>
                 {detectionProgress.total > 0 && (
                   <>
-                    <div className="w-full bg-blue-200 rounded-full h-2.5 mb-2">
+                    <div className="w-full max-w-full bg-blue-200 rounded-full h-2.5 mb-2 overflow-hidden">
                       <div
                         className="bg-blue-600 h-2.5 rounded-full transition-all duration-500"
-                        style={{ width: `${Math.round((detectionProgress.processed / detectionProgress.total) * 100)}%` }}
+                        style={{
+                          width: `${Math.min(
+                            100,
+                            Math.max(
+                              0,
+                              Math.round((detectionProgress.processed / detectionProgress.total) * 100)
+                            )
+                          )}%`,
+                        }}
                       />
                     </div>
                     <p className="text-xs text-blue-600">

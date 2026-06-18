@@ -27,6 +27,7 @@ interface AutoGradingModalProps {
   courseCode: string;
   isOpen: boolean;
   onClose: () => void;
+  onRunStarted?: () => void;
 }
 
 interface GradingResult {
@@ -97,7 +98,7 @@ function gradeColor(grade: string | null) {
   return 'text-gray-600 bg-gray-50';
 }
 
-export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: AutoGradingModalProps) => {
+export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose, onRunStarted }: AutoGradingModalProps) => {
   const [step, setStep] = useState<Step>(1);
 
   // Step 1 state — select questions
@@ -136,10 +137,6 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
     confirmed: boolean;   // user has seen warnings and clicked confirm
   }>({ checked: false, checking: false, files: [], can_proceed: true, confirmed: false });
 
-  // Apply to gradebook
-  const [applying, setApplying] = useState(false);
-  const [applied, setApplied] = useState(false);
-
   // Reset on open
   useEffect(() => {
     if (isOpen && assignment) {
@@ -154,18 +151,64 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
       setJobStatus(null);
       setResults([]);
       setGradingError(null);
-      setApplied(false);
       setExpandedStudents(new Set());
       setPreflight({ checked: false, checking: false, files: [], can_proceed: true, confirmed: false });
+
+      // Check for an existing completed job and auto-jump to results (Step 5)
+      (async () => {
+        try {
+          const latestRes = await fetch(`/api/ai-grading/status/latest/${assignment.id}`);
+          const latestData = await latestRes.json();
+          if (!latestData?.success || !latestData.data) return;
+          const latest = latestData.data;
+          if (latest.status !== 'completed' || !latest.job_id) return;
+
+          // Hydrate the full results from the per-job status endpoint
+          const fullRes = await fetch(`/api/ai-grading/status?jobId=${latest.job_id}`);
+          const fullData = await fullRes.json();
+          if (!fullData?.success) return;
+
+          setJobId(latest.job_id);
+          setJobStatus({
+            id: latest.job_id,
+            total_students: latest.total_students ?? fullData.data?.total_students ?? 0,
+            status: 'completed',
+            completed_at: latest.completed_at ?? null,
+            items_processed: latest.items_processed ?? 0,
+          });
+          if (Array.isArray(fullData.studentGradeFeedback)) {
+            setResults(fullData.studentGradeFeedback);
+          }
+          setStep(5);
+        } catch {
+          // Silent — if we can't load past results, the teacher just starts a new run.
+        }
+      })();
     }
   }, [isOpen, assignment?.id]);
+
+  const rerunFromScratch = () => {
+    setStep(1);
+    setSelectedQuestionIds([]);
+    setSessions([]);
+    setSelectedResourceIds([]);
+    setExpandedSessions(new Set());
+    setLoadingSessions(false);
+    setRubric([]);
+    setJobId(null);
+    setJobStatus(null);
+    setResults([]);
+    setGradingError(null);
+    setExpandedStudents(new Set());
+    setPreflight({ checked: false, checking: false, files: [], can_proceed: true, confirmed: false });
+  };
 
   // Poll job status
   useEffect(() => {
     if (!jobId || jobStatus?.status === 'completed' || jobStatus?.status === 'failed') return;
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/grading/status?jobId=${jobId}`);
+        const res = await fetch(`/api/ai-grading/status?jobId=${jobId}`);
         const data = await res.json();
         if (data.success) {
           setJobStatus(data.data);
@@ -395,7 +438,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
 
     // Then, kick off grading job
     try {
-      const res = await fetch('/api/grading/run-all', {
+      const res = await fetch('/api/ai-grading/run-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ assignmentId: assignment.id.toString() }),
@@ -404,6 +447,7 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
       if (data.success && data.jobId) {
         setJobId(data.jobId);
         setJobStatus({ id: data.jobId, total_students: 0, status: 'running', completed_at: null, items_processed: 0 });
+        onRunStarted?.();
       } else {
         setGrading(false);
         setGradingError(data.error || data.message || 'Could not start grading. Please check that students have submitted essays.');
@@ -411,29 +455,6 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
     } catch {
       setGrading(false);
       setGradingError('Connection error. Please try again.');
-    }
-  };
-
-  // ── Apply scores to gradebook ──
-  const applyToGradebook = async () => {
-    if (!jobId) return;
-    setApplying(true);
-    try {
-      const res = await fetch('/api/grading/apply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId, assignmentId: assignment.id }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setApplied(true);
-      } else {
-        alert('Could not save scores: ' + (data.error || 'Unknown error'));
-      }
-    } catch {
-      alert('Connection error. Please try again.');
-    } finally {
-      setApplying(false);
     }
   };
 
@@ -908,10 +929,10 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
                   <span className="rounded-lg bg-white/60 px-2 py-1"><strong>{selectedQuestionIds.length}</strong> questions</span>
                   <span className="rounded-lg bg-white/60 px-2 py-1"><strong>{selectedResourceIds.length}</strong> materials</span>
                 </div>
-                <div className="w-full bg-indigo-200 rounded-full h-2.5 mb-2">
+                <div className="w-full max-w-full bg-indigo-200 rounded-full h-2.5 mb-2 overflow-hidden">
                   <div
                     className="bg-indigo-600 h-2.5 rounded-full transition-all duration-500"
-                    style={{ width: `${progressPct || 5}%` }}
+                    style={{ width: `${Math.min(100, Math.max(0, progressPct || 5))}%` }}
                   />
                 </div>
                 <p className="text-xs text-indigo-600">This may take a few minutes for large classes.</p>
@@ -939,28 +960,24 @@ export const AutoGradingModal = ({ assignment, courseCode, isOpen, onClose }: Au
           <div className="space-y-5 py-2">
             {/* Status banner */}
             {jobStatus?.status === 'completed' && (
-              <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <FaCheckCircle className="text-green-600" />
+              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <FaRobot className="text-indigo-600 mt-0.5 shrink-0" />
                   <div>
-                    <p className="font-semibold text-green-800">Grading complete!</p>
-                    <p className="text-xs text-green-600 mt-0.5">Review the scores below before saving to the gradebook.</p>
+                    <p className="font-semibold text-indigo-800">AI suggestions — reference only</p>
+                    <p className="text-xs text-indigo-700 mt-0.5 leading-relaxed">
+                      These scores are AI-generated suggestions and do not replace teacher grading.
+                      Teacher grades in the gradebook remain authoritative.
+                    </p>
                   </div>
                 </div>
-                {!applied ? (
-                  <Button
-                    onClick={applyToGradebook}
-                    disabled={applying}
-                    className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white shrink-0 ml-4"
-                  >
-                    {applying ? <FaSpinner className="animate-spin" size={12} /> : <FaCheck size={12} />}
-                    {applying ? 'Saving…' : 'Save Scores to Gradebook'}
-                  </Button>
-                ) : (
-                  <span className="text-sm font-medium text-green-700 bg-green-100 px-3 py-1.5 rounded-lg ml-4">
-                    ✓ Scores saved!
-                  </span>
-                )}
+                <Button
+                  variant="outline"
+                  onClick={rerunFromScratch}
+                  className="shrink-0 text-xs border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                >
+                  <FaPlay size={10} className="mr-1.5" /> Rerun from scratch
+                </Button>
               </div>
             )}
 

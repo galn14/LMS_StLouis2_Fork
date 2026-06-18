@@ -8,7 +8,9 @@ export interface ScoreSubmission {
   assignment_type: string;
   course_code: string;
   course_name: string;
+  class_id?: number | null;
   class_name: string;
+  session_id?: number | null;
   session_title: string;
   session_number: number;
   student?: {

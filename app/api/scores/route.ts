@@ -80,6 +80,7 @@ export async function GET(request: NextRequest) {
                   session_number: true,
                   class_courses: {
                     select: {
+                      class_id: true,
                       courses: {
                         select: {
                           course_code: true,
@@ -136,7 +137,9 @@ export async function GET(request: NextRequest) {
           assignment_type: submission.assignments.enumeration.name,
           course_code: course?.course_code || 'N/A',
           course_name: course?.course_name || 'Unknown Course',
+          class_id: classCourse?.class_id ?? null,
           class_name: classInfo?.class_name || 'Unknown Class',
+          session_id: submission.assignments.session_id,
           session_title: submission.assignments.sessions.title,
           session_number: submission.assignments.sessions.session_number,
           student: {
@@ -206,6 +209,7 @@ export async function GET(request: NextRequest) {
                   session_number: true,
                   class_courses: {
                     select: {
+                      class_id: true,
                       courses: {
                         select: {
                           course_code: true,
@@ -255,7 +259,9 @@ export async function GET(request: NextRequest) {
           assignment_type: submission.assignments.enumeration.name,
           course_code: course?.course_code || 'N/A',
           course_name: course?.course_name || 'Unknown Course',
+          class_id: classCourse?.class_id ?? null,
           class_name: classInfo?.class_name || 'Unknown Class',
+          session_id: submission.assignments.session_id,
           session_title: submission.assignments.sessions.title,
           session_number: submission.assignments.sessions.session_number,
           attempt_number: submission.attempt_number,

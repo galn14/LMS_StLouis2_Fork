@@ -260,6 +260,60 @@ export async function updateGradingJobStatus(
   );
 }
 
+export async function getLatestCompletedJobByAssignment(assignmentId: string) {
+  const rows = await queryAux<AcsGradingJobRecord>(
+    `
+      SELECT *
+      FROM acs_grading_jobs
+      WHERE assignment_id = $1 AND status = 'completed'
+      ORDER BY completed_at DESC NULLS LAST, created_at DESC
+      LIMIT 1
+    `,
+    [assignmentId]
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function getGradingResultsByJobAndStudent(jobId: string, studentId: string) {
+  return queryAux<{
+    student_id: string;
+    question_id: string;
+    score: number | null;
+    max_score: number;
+    qualitative_grade: string | null;
+    feedback: string;
+    citations: unknown;
+    confidence: string;
+    rubric_alignment: unknown;
+    language_detected: string;
+  }>(
+    `
+      SELECT student_id, question_id, score, max_score, qualitative_grade,
+             feedback, citations, confidence, rubric_alignment, language_detected
+      FROM acs_grading_results
+      WHERE job_id = $1 AND student_id = $2
+      ORDER BY question_id ASC
+    `,
+    [jobId, studentId]
+  );
+}
+
+export async function getLatestGradingJobByAssignment(assignmentId: string) {
+  const rows = await queryAux<AcsGradingJobRecord>(
+    `
+      SELECT *
+      FROM acs_grading_jobs
+      WHERE assignment_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [assignmentId]
+  );
+
+  return rows[0] ?? null;
+}
+
 export async function getGradingJobById(jobId: string) {
   const rows = await queryAux<AcsGradingJobRecord>(
     `

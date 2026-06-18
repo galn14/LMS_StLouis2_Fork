@@ -180,9 +180,14 @@ export default function ScorePage() {
   };
 
   const handleSubmissionClick = (submission: Submission) => {
-    router.push(
-      `/course/${submission.course_code}?tab=Assignment&assignmentId=${submission.assignment_id}`
-    );
+    const params = new URLSearchParams({ tab: 'Assignment' });
+    if (submission.session_id !== null && submission.session_id !== undefined) {
+      params.set('sessionId', String(submission.session_id));
+    }
+    if (submission.class_id !== null && submission.class_id !== undefined) {
+      params.set('classId', String(submission.class_id));
+    }
+    router.push(`/course/${submission.course_code}?${params.toString()}`);
   };
 
   const handleCourseClick = (courseCode: string) => {
